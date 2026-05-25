@@ -70,8 +70,9 @@ export default async function HomePage({
           )}
         </div>
         <p className="mt-1 text-sm text-white/60">
-          Average of national-record Kinch scores across 18 events. Tap a row
-          to see the per-event breakdown.
+          {continentId
+            ? "Scores within the selected continent are computed against the continental records."
+            : "Average of national-record Kinch scores across all WCA events. Tap a row to see the per-event breakdown."}
         </p>
       </header>
 
@@ -87,7 +88,7 @@ export default async function HomePage({
           <div className="mb-5">
             <Filters continents={continents} continentId={continentId} />
           </div>
-          <RankingTable rows={rows} showContinentRank={!!continentId} />
+          <RankingTable rows={rows} />
         </>
       )}
 

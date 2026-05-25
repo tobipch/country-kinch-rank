@@ -13,7 +13,6 @@ export const KINCH_EVENTS: KinchEvent[] = [
   { id: "555", shortName: "5x5", longName: "5x5x5 Cube", type: "average" },
   { id: "222", shortName: "2x2", longName: "2x2x2 Cube", type: "average" },
   { id: "333oh", shortName: "OH", longName: "3x3x3 One-Handed", type: "average" },
-  { id: "333ft", shortName: "Feet", longName: "3x3x3 With Feet", type: "average" },
   { id: "minx", shortName: "Mega", longName: "Megaminx", type: "average" },
   { id: "pyram", shortName: "Pyra", longName: "Pyraminx", type: "average" },
   { id: "sq1", shortName: "SQ1", longName: "Square-1", type: "average" },

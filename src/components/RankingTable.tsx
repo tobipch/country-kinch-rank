@@ -7,34 +7,39 @@ import type { RankingRow } from "@/lib/queries";
 
 interface Props {
   rows: RankingRow[];
-  /** When a continent is selected, show the continent rank instead of the world rank. */
-  showContinentRank: boolean;
 }
 
 function scoreColor(score: number): string {
-  // 0 -> red-ish, 100 -> green-ish
   const clamped = Math.max(0, Math.min(100, score));
-  const hue = (clamped / 100) * 130; // 0 = red, 130 = green
+  const hue = (clamped / 100) * 130;
   const a = 0.18 + (clamped / 100) * 0.35;
   return `hsla(${hue.toFixed(0)}, 70%, 45%, ${a.toFixed(2)})`;
 }
 
-function flagEmoji(countryId: string): string {
-  // Most WCA country ids are ISO-2 codes; map non-ISO ids to a globe.
-  if (!countryId || countryId.length !== 2) return "🌐";
-  const A = 0x1f1e6;
-  const a = "A".charCodeAt(0);
-  try {
-    return String.fromCodePoint(
-      A + (countryId.charCodeAt(0) - a),
-      A + (countryId.charCodeAt(1) - a),
+function Flag({ countryId }: { countryId: string }) {
+  if (!countryId || countryId.length !== 2 || !/^[A-Za-z]{2}$/.test(countryId)) {
+    return (
+      <span
+        aria-hidden
+        className="inline-block h-4 w-6 rounded-[2px] bg-white/10"
+      />
     );
-  } catch {
-    return "🌐";
   }
+  const cc = countryId.toLowerCase();
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={`https://flagcdn.com/${cc}.svg`}
+      width={24}
+      height={18}
+      alt=""
+      loading="lazy"
+      className="h-4 w-6 rounded-[2px] object-cover ring-1 ring-black/30"
+    />
+  );
 }
 
-export default function RankingTable({ rows, showContinentRank }: Props) {
+export default function RankingTable({ rows }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   if (rows.length === 0) {
@@ -48,7 +53,6 @@ export default function RankingTable({ rows, showContinentRank }: Props) {
 
   return (
     <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03]">
-      {/* Header (sm+) */}
       <div className="hidden sm:grid grid-cols-[3rem_1fr_6rem] px-4 py-3 text-xs uppercase tracking-wider text-white/50 border-b border-white/10">
         <div>#</div>
         <div>Country</div>
@@ -57,25 +61,21 @@ export default function RankingTable({ rows, showContinentRank }: Props) {
 
       <ul className="divide-y divide-white/10">
         {rows.map((r) => {
-          const rank = showContinentRank ? r.rankContinent : r.rankOverall;
           const isOpen = expanded === r.countryId;
           return (
-            <li key={r.countryId} className="bg-transparent">
+            <li key={r.countryId}>
               <button
                 onClick={() => setExpanded(isOpen ? null : r.countryId)}
                 className="w-full grid grid-cols-[3rem_1fr_6rem] items-center gap-2 px-4 py-3 text-left hover:bg-white/[0.04] transition"
               >
-                <div className="text-white/70 tabular-nums">{rank}</div>
+                <div className="text-white/70 tabular-nums">{r.rank}</div>
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-xl leading-none">
-                      {flagEmoji(r.countryId)}
-                    </span>
+                    <Flag countryId={r.countryId} />
                     <span className="truncate font-medium">{r.countryName}</span>
                   </div>
                   <div className="mt-0.5 text-xs text-white/50">
                     {r.continentName}
-                    {showContinentRank ? null : ` · #${r.rankContinent} in ${r.continentName}`}
                   </div>
                 </div>
                 <div className="text-right tabular-nums font-semibold">
@@ -99,13 +99,10 @@ export default function RankingTable({ rows, showContinentRank }: Props) {
                           const s = r.eventScores[e.id] ?? 0;
                           const v = r.eventValues[e.id] ?? 0;
                           const isAverage = e.type === "average";
-                          let display: string;
-                          if (e.type === "best") {
-                            // value could be either; format heuristically by event id
-                            display = formatResult(v, e.id, false);
-                          } else {
-                            display = formatResult(v, e.id, isAverage);
-                          }
+                          const display =
+                            e.type === "best"
+                              ? formatResult(v, e.id, false)
+                              : formatResult(v, e.id, isAverage);
                           return (
                             <tr key={e.id} className="border-t border-white/5">
                               <td className="py-1.5 pr-3 text-white/80">
