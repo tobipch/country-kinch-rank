@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 0% -10%, rgba(99,102,241,0.10), transparent 60%),
+    radial-gradient(1200px 600px at 100% 110%, rgba(236,72,153,0.08), transparent 60%),
+    #0b0c10;
+  color: #e6e7eb;
+  font-feature-settings: "cv11", "ss03";
+}
+
+/* Subtle scrollbars for the rankings table on desktop */
+.scrollx::-webkit-scrollbar { height: 8px; }
+.scrollx::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 999px;
+}
