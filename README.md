@@ -39,6 +39,21 @@ run on a cron (e.g. nightly). Typical run reads the `Persons`, `Countries`,
 `Continents`, `RanksSingle`, `RanksAverage` tables and writes one row per
 `(country, gender)`.
 
+### GitHub Actions
+
+A workflow at `.github/workflows/compute-ranks.yml` runs the compute job
+nightly at 03:17 UTC and can also be triggered manually from the Actions tab.
+Add these repository secrets (Settings → Secrets and variables → Actions):
+
+- `MYSQL_HOST`
+- `MYSQL_USER`
+- `MYSQL_PASSWORD`
+- `MYSQL_DATABASE`
+- `MYSQL_PORT` (optional, defaults to 3306)
+
+The Hostpoint database must allow external MySQL connections from GitHub's
+runner IP range (or "any IP"). Vercel itself does not run the compute job.
+
 ## Filters
 
 - **Gender**: `all`, `m`, `f` — the denominator (WR) is the best result among
