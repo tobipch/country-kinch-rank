@@ -43,13 +43,14 @@ run on a cron (e.g. nightly). Typical run reads the `Persons`, `Countries`,
 
 A workflow at `.github/workflows/compute-ranks.yml` runs the compute job
 nightly at 03:17 UTC and can also be triggered manually from the Actions tab.
-Add these repository secrets (Settings → Secrets and variables → Actions):
+Only one repository secret is required (Settings → Secrets and variables →
+Actions):
 
-- `MYSQL_HOST`
-- `MYSQL_USER`
 - `MYSQL_PASSWORD`
-- `MYSQL_DATABASE`
-- `MYSQL_PORT` (optional, defaults to 3306)
+
+Host, user, database and port are hardcoded in the workflow (they are not
+sensitive). The job touches only its own `country_kinch_ranks` table — all
+existing WCA tables are read-only.
 
 The Hostpoint database must allow external MySQL connections from GitHub's
 runner IP range (or "any IP"). Vercel itself does not run the compute job.

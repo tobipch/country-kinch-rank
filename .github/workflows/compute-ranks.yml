@@ -15,11 +15,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      MYSQL_HOST: ${{ secrets.MYSQL_HOST }}
-      MYSQL_USER: ${{ secrets.MYSQL_USER }}
+      MYSQL_HOST: tobipch.mysql.db.hostpoint.ch
+      MYSQL_USER: tobipch_admin
+      MYSQL_DATABASE: tobipch_cubefeed
+      MYSQL_PORT: "3306"
       MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
-      MYSQL_DATABASE: ${{ secrets.MYSQL_DATABASE }}
-      MYSQL_PORT: ${{ secrets.MYSQL_PORT }}
     steps:
       - uses: actions/checkout@v4
 
