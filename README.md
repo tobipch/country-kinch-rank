@@ -15,6 +15,19 @@ For each of 18 events, the score is `WR / NR * 100`:
 For Multi-BLD: `points + (3600 − time_in_seconds) / 3600`.
 The country's Kinch score is the average of the 18 event scores.
 
+## Database expectations
+
+This app reads from an existing WCA-style database with these tables:
+
+- `persons (wca_id, sub_id, name, country_id)`
+- `countries (id, continent_id)`
+- `ranks_single (person_id, event_id, best, country_id, continent_id, …)`
+- `ranks_average (person_id, event_id, best, country_id, continent_id, …)`
+
+It only writes to its own `country_kinch_ranks` table. Country and continent
+display names are resolved client-side (no `countries.name` / `continents`
+table needed)._
+
 ## Setup
 
 ```bash

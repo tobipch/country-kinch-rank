@@ -1,16 +1,9 @@
 import { query } from "./db";
-
-export type GenderFilter = "all" | "m" | "f";
+import { continentName, countryName } from "./wca-meta";
 
 export interface Continent {
   id: string;
   name: string;
-}
-
-export interface Country {
-  id: string;
-  name: string;
-  continentId: string;
 }
 
 export interface RankingRow {
@@ -27,48 +20,49 @@ export interface RankingRow {
 }
 
 export async function listContinents(): Promise<Continent[]> {
-  return query<Continent>(
-    "SELECT id, name FROM Continents ORDER BY name ASC",
+  const rows = await query<{ continent_id: string }>(
+    `SELECT DISTINCT continent_id
+     FROM country_kinch_ranks
+     WHERE continent_id <> ''
+     ORDER BY continent_id`,
   );
+  return rows
+    .map((r) => ({ id: r.continent_id, name: continentName(r.continent_id) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function fetchRankings(
-  gender: GenderFilter,
   continentId: string | null,
 ): Promise<RankingRow[]> {
-  const params: any[] = [gender];
-  let where = "k.gender = ?";
+  const params: any[] = [];
+  let where = "1=1";
   if (continentId) {
-    where += " AND k.continent_id = ?";
+    where = "continent_id = ?";
     params.push(continentId);
   }
   const rows = await query<any>(
     `
     SELECT
-      k.country_id      AS countryId,
-      c.name            AS countryName,
-      k.continent_id    AS continentId,
-      cn.name           AS continentName,
-      k.kinch_score     AS kinchScore,
-      k.rank_overall    AS rankOverall,
-      k.rank_continent  AS rankContinent,
-      k.event_scores    AS eventScores,
-      k.event_values    AS eventValues,
-      k.computed_at     AS computedAt
-    FROM country_kinch_ranks k
-    JOIN Countries  c  ON c.id  = k.country_id
-    JOIN Continents cn ON cn.id = k.continent_id
+      country_id      AS countryId,
+      continent_id    AS continentId,
+      kinch_score     AS kinchScore,
+      rank_overall    AS rankOverall,
+      rank_continent  AS rankContinent,
+      event_scores    AS eventScores,
+      event_values    AS eventValues,
+      computed_at     AS computedAt
+    FROM country_kinch_ranks
     WHERE ${where}
-    ORDER BY k.kinch_score DESC
+    ORDER BY kinch_score DESC
     `,
     params,
   );
 
   return rows.map((r) => ({
     countryId: r.countryId,
-    countryName: r.countryName,
+    countryName: countryName(r.countryId),
     continentId: r.continentId,
-    continentName: r.continentName,
+    continentName: continentName(r.continentId),
     kinchScore: Number(r.kinchScore),
     rankOverall: r.rankOverall,
     rankContinent: r.rankContinent,

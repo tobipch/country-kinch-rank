@@ -6,26 +6,19 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 type SearchParams = {
-  gender?: string;
   continent?: string;
 };
-
-function normalizeGender(input: string | undefined): "all" | "m" | "f" {
-  if (input === "m" || input === "f") return input;
-  return "all";
-}
 
 export default async function HomePage({
   searchParams,
 }: {
   searchParams: SearchParams;
 }) {
-  const gender = normalizeGender(searchParams.gender);
   const continentId = searchParams.continent || null;
 
   const [continents, rows, computedAt] = await Promise.all([
     listContinents(),
-    fetchRankings(gender, continentId),
+    fetchRankings(continentId),
     lastComputedAt(),
   ]);
 
@@ -44,16 +37,12 @@ export default async function HomePage({
         </div>
         <p className="mt-1 text-sm text-white/60">
           Average of national-record Kinch scores across 18 events. Tap a row
-          to see per-event breakdown.
+          to see the per-event breakdown.
         </p>
       </header>
 
       <div className="mb-5">
-        <Filters
-          continents={continents}
-          gender={gender}
-          continentId={continentId}
-        />
+        <Filters continents={continents} continentId={continentId} />
       </div>
 
       <RankingTable rows={rows} showContinentRank={!!continentId} />

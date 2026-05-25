@@ -5,16 +5,15 @@ const DDL = `
 CREATE TABLE IF NOT EXISTS country_kinch_ranks (
   country_id      VARCHAR(50)  NOT NULL,
   continent_id    VARCHAR(50)  NOT NULL,
-  gender          ENUM('all','m','f') NOT NULL,
   kinch_score     DECIMAL(8,4) NOT NULL,
   event_scores    JSON         NOT NULL,
   event_values    JSON         NOT NULL,
   rank_overall    INT          NOT NULL,
   rank_continent  INT          NOT NULL,
   computed_at     DATETIME     NOT NULL,
-  PRIMARY KEY (country_id, gender),
-  KEY idx_gender_score (gender, kinch_score DESC),
-  KEY idx_continent (continent_id, gender)
+  PRIMARY KEY (country_id),
+  KEY idx_score (kinch_score),
+  KEY idx_continent (continent_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `;
 
