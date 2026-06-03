@@ -4,6 +4,11 @@ import { KINCH_EVENTS, KinchEvent } from "../src/lib/events";
 import { multiBldKinchScore } from "../src/lib/multibld";
 import { isPseudoCountry } from "../src/lib/wca-meta";
 
+interface PersonResult {
+  person_id: string;
+  best: number;
+}
+
 interface CountryBest {
   country_id: string;
   best: number;
@@ -31,25 +36,35 @@ function toKinchScore(eventId: string, value: number, reference: number): number
 }
 
 /**
- * Fetch each country's best result for an event, joining persons so we use
- * the *current* country (sub_id = 1) rather than the denormalised value
- * stored on the ranks tables (which may be stale after a person changes
- * country).
+ * Fetch each result holder's best result for an event. We resolve the
+ * *current* country via a JS lookup against the prebuilt persons map so we
+ * don't depend on the (potentially stale) country_id stored on the ranks
+ * tables or on a specific sub_id convention used by the importer.
  */
-async function fetchBestPerCountry(
+async function fetchEventResults(
   table: "ranks_single" | "ranks_average",
   eventId: string,
-): Promise<CountryBest[]> {
-  return query<CountryBest>(
-    `
-    SELECT p.country_id AS country_id, MIN(r.best) AS best
-    FROM ${table} r
-    JOIN persons p ON p.wca_id = r.person_id AND p.sub_id = 1
-    WHERE r.event_id = ? AND r.best > 0 AND p.country_id IS NOT NULL
-    GROUP BY p.country_id
-    `,
+): Promise<PersonResult[]> {
+  return query<PersonResult>(
+    `SELECT person_id, best
+     FROM ${table}
+     WHERE event_id = ? AND best > 0`,
     [eventId],
   );
+}
+
+function aggregatePerCountry(
+  results: PersonResult[],
+  personCountry: Map<string, string>,
+): CountryBest[] {
+  const m = new Map<string, number>();
+  for (const r of results) {
+    const cid = personCountry.get(r.person_id);
+    if (!cid) continue;
+    const cur = m.get(cid);
+    if (cur === undefined || r.best < cur) m.set(cid, r.best);
+  }
+  return Array.from(m, ([country_id, best]) => ({ country_id, best }));
 }
 
 interface EventDataset {
@@ -58,18 +73,44 @@ interface EventDataset {
   average?: CountryBest[];
 }
 
-async function loadEventData(event: KinchEvent): Promise<EventDataset> {
+async function loadEventData(
+  event: KinchEvent,
+  personCountry: Map<string, string>,
+): Promise<EventDataset> {
+  const agg = (rows: PersonResult[]) => aggregatePerCountry(rows, personCountry);
   if (event.type === "average") {
-    return { event, average: await fetchBestPerCountry("ranks_average", event.id) };
+    const raw = await fetchEventResults("ranks_average", event.id);
+    return { event, average: agg(raw) };
   }
   if (event.type === "single" || event.type === "multibld") {
-    return { event, single: await fetchBestPerCountry("ranks_single", event.id) };
+    const raw = await fetchEventResults("ranks_single", event.id);
+    return { event, single: agg(raw) };
   }
-  const [single, average] = await Promise.all([
-    fetchBestPerCountry("ranks_single", event.id),
-    fetchBestPerCountry("ranks_average", event.id),
+  const [s, a] = await Promise.all([
+    fetchEventResults("ranks_single", event.id),
+    fetchEventResults("ranks_average", event.id),
   ]);
-  return { event, single, average };
+  return { event, single: agg(s), average: agg(a) };
+}
+
+/**
+ * Build wca_id → current country_id by picking the row with the smallest
+ * sub_id per person. By WCA convention the lowest sub_id is the current
+ * (active) entry; older country assignments live on higher sub_ids. This
+ * sidesteps any importer-specific quirks around what value sub_id takes.
+ */
+async function loadPersonCountries(): Promise<Map<string, string>> {
+  const rows = await query<{ wca_id: string; sub_id: number; country_id: string | null }>(
+    `SELECT wca_id, sub_id, country_id
+     FROM persons
+     WHERE country_id IS NOT NULL
+     ORDER BY wca_id, sub_id ASC`,
+  );
+  const m = new Map<string, string>();
+  for (const r of rows) {
+    if (!m.has(r.wca_id) && r.country_id) m.set(r.wca_id, r.country_id);
+  }
+  return m;
 }
 
 function toMap(rows: CountryBest[] | undefined): Map<string, number> {
@@ -104,9 +145,18 @@ async function main() {
     countriesByContinent.get(c.continent_id)!.add(c.country_id);
   }
 
+  console.log("Loading persons…");
+  const personCountry = await loadPersonCountries();
+  console.log(`  ${personCountry.size} persons with a current country`);
+
   console.log(`Loading per-event data for ${KINCH_EVENTS.length} events…`);
-  const datasets = await Promise.all(KINCH_EVENTS.map((e) => loadEventData(e)));
-  console.log("  done");
+  const datasets = await Promise.all(
+    KINCH_EVENTS.map((e) => loadEventData(e, personCountry)),
+  );
+  const sampleCounts = datasets
+    .map((d) => `${d.event.id}=${(d.single?.length ?? 0) + (d.average?.length ?? 0)}`)
+    .join(", ");
+  console.log(`  per-event country counts: ${sampleCounts}`);
 
   // perCountry[countryId] -> { eventId -> { value, scoreWorld, scoreCont } }
   type Slot = { value: number; scoreWorld: number; scoreCont: number };
