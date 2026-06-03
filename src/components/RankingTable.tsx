@@ -4,6 +4,7 @@ import { useState } from "react";
 import { KINCH_EVENTS } from "@/lib/events";
 import { formatResult } from "@/lib/format";
 import type { RankingRow } from "@/lib/queries";
+import { countryCode } from "@/lib/wca-meta";
 
 interface Props {
   rows: RankingRow[];
@@ -17,7 +18,8 @@ function scoreColor(score: number): string {
 }
 
 function Flag({ countryId }: { countryId: string }) {
-  if (!countryId || countryId.length !== 2 || !/^[A-Za-z]{2}$/.test(countryId)) {
+  const code = countryCode(countryId);
+  if (!code) {
     return (
       <span
         aria-hidden
@@ -25,11 +27,10 @@ function Flag({ countryId }: { countryId: string }) {
       />
     );
   }
-  const cc = countryId.toLowerCase();
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={`https://flagcdn.com/${cc}.svg`}
+      src={`https://flagcdn.com/${code.toLowerCase()}.svg`}
       width={24}
       height={18}
       alt=""
