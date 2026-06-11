@@ -2,9 +2,9 @@ import KinchBoard from "@/components/KinchBoard";
 import { fetchBoard, type BoardData } from "@/lib/queries";
 
 /**
- * Statically generated and revalidated in the background every 10 minutes.
- * Requests are served from the CDN cache — no database roundtrip on the
- * request path. The continent filter is purely client-side.
+ * Static + revalidated every 10 minutes. All payload (board, refs, NR
+ * holders) is embedded so filter / detail / what-if work without any
+ * server roundtrip.
  */
 export const revalidate = 600;
 
@@ -30,14 +30,14 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-3 pb-16 pt-6 sm:px-6 sm:pt-10">
-      <header className="mb-4 sm:mb-6">
+    <main className="mx-auto max-w-6xl px-2 pb-12 pt-4 sm:px-6 sm:pt-8">
+      <header className="mb-3 px-1 sm:mb-5 sm:px-0">
         <div className="flex items-baseline justify-between gap-2">
-          <h1 className="text-xl sm:text-3xl font-semibold tracking-tight">
+          <h1 className="text-lg sm:text-2xl font-semibold tracking-tight">
             Country Kinch Ranks
           </h1>
           {data?.computedAt && (
-            <span className="shrink-0 text-xs text-white/40">
+            <span className="shrink-0 text-[11px] text-white/40">
               {new Date(data.computedAt).toLocaleDateString("en-CH")}
             </span>
           )}
@@ -52,16 +52,20 @@ export default async function HomePage() {
           <p className="mt-1 text-white/70">{error}</p>
         </div>
       ) : (
-        <KinchBoard rows={data.rows} continents={data.continents} />
+        <KinchBoard
+          rows={data.rows}
+          continents={data.continents}
+          refs={data.refs}
+        />
       )}
 
-      <footer className="mt-6 text-center text-xs text-white/40">
+      <footer className="mt-6 text-center text-[11px] text-white/35">
         Source: WCA database · Inspired by{" "}
         <a
           href="https://wca.cuber.pro/kinch/countries"
           target="_blank"
           rel="noreferrer"
-          className="underline hover:text-white/70"
+          className="underline hover:text-white/60"
         >
           wca.cuber.pro
         </a>

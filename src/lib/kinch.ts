@@ -4,38 +4,32 @@ import { multiBldKinchScore } from "./multibld";
 import { isPseudoCountry } from "./wca-meta";
 
 /**
- * Core Kinch computation, shared by the nightly compute script and the
- * explain/verification script so both always agree.
- *
- * Definitions:
- *  - For each event, a country's score is REF / NR × 100 where NR is the
- *    national record (best result by a person *currently* representing the
- *    country) and REF is the world record (all-continents view) or the
- *    continental record (continent view).
- *  - Multi-BLD results are decoded to points + (3600 − seconds) / 3600 and
- *    the ratio of those decoded scores is used (more points always wins).
- *  - 3BLD and FM use single or average, whichever yields the better score —
- *    chosen independently for the world view and the continent view.
- *  - Missing events score 0. The final Kinch score is the plain average
- *    over all KINCH_EVENTS.
+ * Core Kinch computation. Single source of truth used by both the nightly
+ * compute job and the explain/verification script.
  */
 
 export type Kind = "s" | "a";
+
+export interface CompInfo {
+  id: string;
+  name: string;
+  /** YYYY-MM-DD */
+  date: string;
+  city: string;
+}
 
 export interface BestResult {
   value: number;
   personId: string;
   personName: string;
   countryId: string;
+  comp: CompInfo | null;
 }
 
 export interface EventSide {
   table: "ranks_single" | "ranks_average";
-  /** Best result worldwide (the reference for the all-continents view). */
   worldRef: BestResult | null;
-  /** Best result per continent (the reference for the continent view). */
   contRef: Map<string, BestResult>;
-  /** Best result per country (the NR). */
   countryBest: Map<string, BestResult>;
 }
 
@@ -49,6 +43,8 @@ export interface EventScore {
   score: number;
   value: number;
   kind: Kind;
+  /** NR holder + comp (set after enrichWithCompetitions). */
+  holder: BestResult | null;
 }
 
 export interface CountryKinch {
@@ -82,11 +78,6 @@ interface PersonInfo {
   name: string;
 }
 
-/**
- * wca_id → current country + name. The row with the smallest sub_id per
- * person is the current entry (older country assignments live on higher
- * sub_ids), so this works for 0- and 1-based importers alike.
- */
 async function loadPersons(): Promise<Map<string, PersonInfo>> {
   const rows = await query<{
     wca_id: string;
@@ -129,6 +120,7 @@ async function loadSide(
       personId: r.person_id,
       personName: p?.name ?? r.person_id,
       countryId,
+      comp: null,
     };
     if (!worldRef || r.best < worldRef.value) worldRef = br;
     if (!p || isPseudoCountry(countryId)) continue;
@@ -151,11 +143,6 @@ function defaultKind(event: KinchEvent): Kind {
   return event.type === "average" ? "a" : "s";
 }
 
-/**
- * Pick the scoring variant for one country/event/reference-scope.
- * For "best" events the better of single and average is chosen
- * independently per scope.
- */
 function pick(
   ed: EventData,
   sBest: BestResult | undefined,
@@ -166,17 +153,16 @@ function pick(
   const s = sBest ? kinchScore(ed.event.id, sBest.value, sRef) : 0;
   const a = aBest ? kinchScore(ed.event.id, aBest.value, aRef) : 0;
   if (ed.event.type === "average") {
-    return { score: a, value: aBest?.value ?? 0, kind: "a" };
+    return { score: a, value: aBest?.value ?? 0, kind: "a", holder: aBest ?? null };
   }
   if (ed.event.type === "best") {
     return s >= a
-      ? { score: s, value: sBest?.value ?? 0, kind: "s" }
-      : { score: a, value: aBest?.value ?? 0, kind: "a" };
+      ? { score: s, value: sBest?.value ?? 0, kind: "s", holder: sBest ?? null }
+      : { score: a, value: aBest?.value ?? 0, kind: "a", holder: aBest ?? null };
   }
-  return { score: s, value: sBest?.value ?? 0, kind: "s" };
+  return { score: s, value: sBest?.value ?? 0, kind: "s", holder: sBest ?? null };
 }
 
-/** Competition ranking: equal scores share a rank (1, 2, 2, 4). */
 function assignRanks(
   list: CountryKinch[],
   key: (c: CountryKinch) => number,
@@ -194,6 +180,89 @@ function assignRanks(
     prev = v;
     prevRank = rank;
   });
+}
+
+/**
+ * Enrich BestResult.comp by looking up the earliest competition where the
+ * holder achieved that exact result. Only the NR/CR/WR holders we actually
+ * care about are queried, so this stays fast even on the full WCA dump.
+ */
+async function enrichWithCompetitions(events: EventData[]): Promise<void> {
+  const compRows = await query<{
+    id: string;
+    name: string;
+    city_name: string | null;
+    year: number;
+    month: number;
+    day: number;
+  }>(
+    "SELECT id, name, city_name, year, month, day FROM competitions",
+  );
+  const comps = new Map<string, CompInfo>();
+  for (const c of compRows) {
+    const date = `${c.year}-${String(c.month).padStart(2, "0")}-${String(c.day).padStart(2, "0")}`;
+    comps.set(c.id, {
+      id: c.id,
+      name: c.name,
+      date,
+      city: c.city_name ?? "",
+    });
+  }
+
+  // For each event, gather the holder set we need to enrich, then issue one
+  // results query and look up each holder's earliest matching competition.
+  await Promise.all(
+    events.map(async (ed) => {
+      const enrichSide = async (side: EventSide | null, kind: Kind) => {
+        if (!side) return;
+        const holders = new Map<string, BestResult[]>();
+        const addHolder = (br: BestResult | null) => {
+          if (!br) return;
+          if (!holders.has(br.personId)) holders.set(br.personId, []);
+          holders.get(br.personId)!.push(br);
+        };
+        addHolder(side.worldRef);
+        for (const br of side.contRef.values()) addHolder(br);
+        for (const br of side.countryBest.values()) addHolder(br);
+        if (holders.size === 0) return;
+
+        const personIds = Array.from(holders.keys());
+        const placeholders = personIds.map(() => "?").join(",");
+        const valueCol = kind === "s" ? "best" : "average";
+        const rows = await query<{
+          person_id: string;
+          val: number;
+          competition_id: string;
+        }>(
+          `SELECT person_id, ${valueCol} AS val, competition_id
+           FROM results
+           WHERE event_id = ? AND ${valueCol} > 0 AND person_id IN (${placeholders})`,
+          [ed.event.id, ...personIds],
+        );
+        const byPerson = new Map<string, { val: number; comp: CompInfo }[]>();
+        for (const r of rows) {
+          const comp = comps.get(r.competition_id);
+          if (!comp) continue;
+          if (!byPerson.has(r.person_id)) byPerson.set(r.person_id, []);
+          byPerson.get(r.person_id)!.push({ val: r.val, comp });
+        }
+        for (const [personId, holderList] of holders) {
+          const candidates = byPerson.get(personId) ?? [];
+          for (const br of holderList) {
+            const matches = candidates.filter((c) => c.val === br.value);
+            if (matches.length === 0) continue;
+            matches.sort((a, b) => a.comp.date.localeCompare(b.comp.date));
+            br.comp = matches[0].comp;
+          }
+        }
+      };
+
+      await Promise.all([
+        enrichSide(ed.single, "s"),
+        enrichSide(ed.average, "a"),
+      ]);
+    }),
+  );
 }
 
 export async function computeAll(): Promise<KinchComputation> {
@@ -221,6 +290,8 @@ export async function computeAll(): Promise<KinchComputation> {
       return { event, single, average };
     }),
   );
+
+  await enrichWithCompetitions(events);
 
   const byCountry = new Map<string, CountryKinch>();
   const ensure = (cid: string): CountryKinch | null => {
@@ -278,8 +349,8 @@ export async function computeAll(): Promise<KinchComputation> {
       let slot = c.events[e.id];
       if (!slot) {
         slot = {
-          world: { score: 0, value: 0, kind: defaultKind(e) },
-          cont: { score: 0, value: 0, kind: defaultKind(e) },
+          world: { score: 0, value: 0, kind: defaultKind(e), holder: null },
+          cont: { score: 0, value: 0, kind: defaultKind(e), holder: null },
         };
         c.events[e.id] = slot;
       }
