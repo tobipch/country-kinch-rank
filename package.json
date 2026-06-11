@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "compute": "tsx scripts/compute-ranks.ts",
-    "init-db": "tsx scripts/init-db.ts"
+    "init-db": "tsx scripts/init-db.ts",
+    "explain": "tsx scripts/explain-country.ts"
   },
   "dependencies": {
     "mysql2": "^3.11.5",

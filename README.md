@@ -5,15 +5,27 @@ Mobile-first Next.js app with filters by continent and gender.
 
 ## What is a Kinch rank?
 
-For each of 18 events, the score is `WR / NR * 100`:
+For each of 17 events, the score is `REF / NR × 100`, where NR is the
+national record and REF is the world record (all-continents view) or the
+continental record (when a continent is selected):
 
-- **Averages**: 3×3, 4×4, 5×5, 2×2, OH, Feet, Megaminx, Pyraminx, Square-1,
+- **Averages**: 3×3, 4×4, 5×5, 2×2, OH, Megaminx, Pyraminx, Square-1,
   Clock, Skewb, 6×6, 7×7
 - **Singles**: 4BLD, 5BLD, Multi-BLD
-- **Best of single or average**: 3BLD, FM
+- **Best of single or average** (chosen independently per view): 3BLD, FM
 
-For Multi-BLD: `points + (3600 − time_in_seconds) / 3600`.
-The country's Kinch score is the average of the 18 event scores.
+For Multi-BLD, results are decoded to `points + (3600 − seconds) / 3600`
+and the ratio of decoded scores is used. The country's Kinch score is the
+plain average of the 17 event scores (missing events count as 0).
+
+## Verifying a calculation
+
+`npm run explain -- Switzerland` (or the **Explain Country Kinch** workflow
+in the Actions tab) prints the entire calculation for one country: every NR
+with its holder, every WR/CR reference with its holder, each event score,
+and the final sums for both views. The script shares the exact code path
+with the nightly compute job (`src/lib/kinch.ts`), so what it prints is
+what gets stored.
 
 ## Database expectations
 

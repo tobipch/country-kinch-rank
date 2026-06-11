@@ -1,5 +1,6 @@
 import { query } from "./db";
 import { continentName, countryName } from "./wca-meta";
+import type { Kind } from "./kinch";
 
 export interface Continent {
   id: string;
@@ -15,7 +16,19 @@ export interface RankingRow {
   rank: number;
   eventScores: Record<string, number>;
   eventValues: Record<string, number>;
+  eventKinds: Record<string, Kind>;
   computedAt: Date;
+}
+
+interface StoredEventData {
+  [eventId: string]: {
+    sw: number;
+    vw: number;
+    kw: Kind;
+    sc: number;
+    vc: number;
+    kc: Kind;
+  };
 }
 
 export async function listContinents(): Promise<Continent[]> {
@@ -31,51 +44,56 @@ export async function listContinents(): Promise<Continent[]> {
 }
 
 /**
- * If `continentId` is given, scores and ranks are computed relative to that
- * continent's records and only countries in that continent are returned.
- * Otherwise, world-record-based scores and world ranks are returned.
+ * Without a continent filter, scores/ranks are world-record based.
+ * With a continent filter, only that continent's countries are returned and
+ * scores/ranks are based on the continental records.
  */
 export async function fetchRankings(
   continentId: string | null,
 ): Promise<RankingRow[]> {
+  const scoreCol = continentId ? "kinch_score_cont" : "kinch_score_world";
+  const rankCol = continentId ? "rank_continent" : "rank_world";
+  const params: any[] = [];
+  let where = "1=1";
   if (continentId) {
-    const rows = await query<any>(
-      `
-      SELECT
-        country_id        AS countryId,
-        continent_id      AS continentId,
-        kinch_score_cont  AS kinchScore,
-        rank_continent    AS rank,
-        event_scores_cont AS eventScores,
-        event_values      AS eventValues,
-        computed_at       AS computedAt
-      FROM country_kinch_ranks
-      WHERE continent_id = ?
-      ORDER BY kinch_score_cont DESC
-      `,
-      [continentId],
-    );
-    return rows.map(mapRow);
+    where = "continent_id = ?";
+    params.push(continentId);
   }
 
   const rows = await query<any>(
     `
     SELECT
-      country_id         AS countryId,
-      continent_id       AS continentId,
-      kinch_score_world  AS kinchScore,
-      rank_world         AS rank,
-      event_scores_world AS eventScores,
-      event_values       AS eventValues,
-      computed_at        AS computedAt
+      country_id   AS countryId,
+      continent_id AS continentId,
+      ${scoreCol}  AS kinchScore,
+      ${rankCol}   AS rank,
+      event_data   AS eventData,
+      computed_at  AS computedAt
     FROM country_kinch_ranks
-    ORDER BY kinch_score_world DESC
+    WHERE ${where}
+    ORDER BY ${scoreCol} DESC, country_id ASC
     `,
+    params,
   );
-  return rows.map(mapRow);
+
+  return rows.map((r) => mapRow(r, !!continentId));
 }
 
-function mapRow(r: any): RankingRow {
+function mapRow(r: any, continental: boolean): RankingRow {
+  const data: StoredEventData =
+    typeof r.eventData === "string"
+      ? JSON.parse(r.eventData)
+      : r.eventData ?? {};
+
+  const eventScores: Record<string, number> = {};
+  const eventValues: Record<string, number> = {};
+  const eventKinds: Record<string, Kind> = {};
+  for (const [eventId, d] of Object.entries(data)) {
+    eventScores[eventId] = continental ? d.sc : d.sw;
+    eventValues[eventId] = continental ? d.vc : d.vw;
+    eventKinds[eventId] = continental ? d.kc : d.kw;
+  }
+
   return {
     countryId: r.countryId,
     countryName: countryName(r.countryId),
@@ -83,14 +101,9 @@ function mapRow(r: any): RankingRow {
     continentName: continentName(r.continentId),
     kinchScore: Number(r.kinchScore),
     rank: r.rank,
-    eventScores:
-      typeof r.eventScores === "string"
-        ? JSON.parse(r.eventScores)
-        : r.eventScores ?? {},
-    eventValues:
-      typeof r.eventValues === "string"
-        ? JSON.parse(r.eventValues)
-        : r.eventValues ?? {},
+    eventScores,
+    eventValues,
+    eventKinds,
     computedAt: new Date(r.computedAt),
   };
 }

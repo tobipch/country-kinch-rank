@@ -1,0 +1,32 @@
+name: Explain Country Kinch
+
+on:
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "Country name or ISO code (e.g. Switzerland or CH)"
+        required: true
+        default: "Switzerland"
+
+jobs:
+  explain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MYSQL_HOST: tobipch.mysql.db.hostpoint.ch
+      MYSQL_USER: tobipch_admin
+      MYSQL_DATABASE: tobipch_cubefeed
+      MYSQL_PORT: "3306"
+      MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Print full Kinch calculation
+        run: npm run explain -- "${{ github.event.inputs.country }}"

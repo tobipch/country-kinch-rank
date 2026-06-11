@@ -99,15 +99,19 @@ export default function RankingTable({ rows }: Props) {
                         {KINCH_EVENTS.map((e) => {
                           const s = r.eventScores[e.id] ?? 0;
                           const v = r.eventValues[e.id] ?? 0;
-                          const isAverage = e.type === "average";
-                          const display =
-                            e.type === "best"
-                              ? formatResult(v, e.id, false)
-                              : formatResult(v, e.id, isAverage);
+                          const kind =
+                            r.eventKinds[e.id] ??
+                            (e.type === "average" ? "a" : "s");
+                          const display = formatResult(v, e.id, kind);
                           return (
                             <tr key={e.id} className="border-t border-white/5">
                               <td className="py-1.5 pr-3 text-white/80">
                                 {e.longName}
+                                {e.type === "best" && v > 0 && (
+                                  <span className="ml-1 text-xs text-white/40">
+                                    ({kind === "s" ? "single" : "avg"})
+                                  </span>
+                                )}
                               </td>
                               <td className="py-1.5 pr-3 text-right tabular-nums text-white/70">
                                 {display}

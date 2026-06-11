@@ -1,37 +1,31 @@
 import { formatMultiBld } from "./multibld";
+import type { Kind } from "./kinch";
 
 /**
- * Format a WCA result (centiseconds for time events, moves for FM) into a
- * human-readable string.
+ * Format a WCA result value for display.
  *
- *   333fm avg:    e.g. 2533 → "25.33"  (we store fm averages * 100)
- *   333fm single: e.g. 25   → "25"
- *   333mbf:       decoded to "S/A M:SS"
- *   others:       centiseconds → "M:SS.cs" or "S.cs"
+ *   333mbf:            decoded to "S/A M:SS"
+ *   333fm single:      move count, e.g. 25 → "25"
+ *   333fm average:     stored as moves × 100, e.g. 2533 → "25.33"
+ *   everything else:   centiseconds → "M:SS.cs" or "S.cs"
  */
 export function formatResult(
   value: number,
   eventId: string,
-  isAverage: boolean,
+  kind: Kind,
 ): string {
-  if (!value || value <= 0) return "-";
+  if (!value || value <= 0) return "—";
 
   if (eventId === "333mbf") {
     return formatMultiBld(value);
   }
 
   if (eventId === "333fm") {
-    if (isAverage) {
-      // average is stored as moves * 100
-      return (value / 100).toFixed(2);
-    }
-    return String(value);
+    return kind === "a" ? (value / 100).toFixed(2) : String(value);
   }
 
-  // Time-based, centiseconds
-  const totalCs = value;
-  const totalSeconds = Math.floor(totalCs / 100);
-  const cs = totalCs % 100;
+  const totalSeconds = Math.floor(value / 100);
+  const cs = value % 100;
   if (totalSeconds >= 60) {
     const min = Math.floor(totalSeconds / 60);
     const sec = totalSeconds % 60;
