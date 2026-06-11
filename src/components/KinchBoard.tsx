@@ -85,6 +85,17 @@ export default function KinchBoard({ rows, continents, refs }: Props) {
     setFocusEvent(eventId);
   }
 
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-8 text-center text-sm text-white/60">
+        <div className="mb-1 font-medium text-white/80">
+          Rankings are being recomputed
+        </div>
+        The data refreshes automatically — check back in a few minutes.
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="mb-3 flex flex-wrap gap-1.5">
