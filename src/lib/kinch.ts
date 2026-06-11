@@ -182,30 +182,70 @@ function assignRanks(
   });
 }
 
+async function tableColumns(table: string): Promise<Set<string>> {
+  const rows = await query<{ col: string }>(
+    `SELECT COLUMN_NAME AS col
+     FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = ?`,
+    [table],
+  );
+  return new Set(rows.map((r) => r.col.toLowerCase()));
+}
+
 /**
  * Enrich BestResult.comp by looking up the earliest competition where the
  * holder achieved that exact result. Only the NR/CR/WR holders we actually
  * care about are queried, so this stays fast even on the full WCA dump.
+ *
+ * Importers model the competitions table differently (WCA dump uses
+ * year/month/day, API-style imports use start_date), so the available
+ * columns are introspected first. If essentials are missing, enrichment is
+ * skipped and the compute still succeeds — comp info is a nice-to-have.
  */
 async function enrichWithCompetitions(events: EventData[]): Promise<void> {
-  const compRows = await query<{
-    id: string;
-    name: string;
-    city_name: string | null;
-    year: number;
-    month: number;
-    day: number;
-  }>(
-    "SELECT id, name, city_name, year, month, day FROM competitions",
+  const compCols = await tableColumns("competitions");
+  const resultCols = await tableColumns("results");
+
+  const resultsNeeded = ["person_id", "event_id", "competition_id", "best", "average"];
+  const missingResults = resultsNeeded.filter((c) => !resultCols.has(c));
+  if (!compCols.has("id") || !compCols.has("name") || missingResults.length > 0) {
+    console.warn(
+      `Skipping competition enrichment (competitions has id/name: ${compCols.has("id") && compCols.has("name")}, ` +
+        `results missing: ${missingResults.join(",") || "none"})`,
+    );
+    return;
+  }
+
+  const cityCol = compCols.has("city_name")
+    ? "city_name"
+    : compCols.has("city")
+      ? "city"
+      : null;
+  const hasStartDate = compCols.has("start_date");
+  const hasYmd =
+    compCols.has("year") && compCols.has("month") && compCols.has("day");
+
+  const selectParts = ["id", "name"];
+  if (cityCol) selectParts.push(`${cityCol} AS city`);
+  if (hasStartDate) selectParts.push("start_date");
+  else if (hasYmd) selectParts.push("year", "month", "day");
+
+  const compRows = await query<any>(
+    `SELECT ${selectParts.join(", ")} FROM competitions`,
   );
   const comps = new Map<string, CompInfo>();
   for (const c of compRows) {
-    const date = `${c.year}-${String(c.month).padStart(2, "0")}-${String(c.day).padStart(2, "0")}`;
+    let date = "";
+    if (hasStartDate && c.start_date) {
+      date = new Date(c.start_date).toISOString().slice(0, 10);
+    } else if (hasYmd && c.year) {
+      date = `${c.year}-${String(c.month).padStart(2, "0")}-${String(c.day).padStart(2, "0")}`;
+    }
     comps.set(c.id, {
       id: c.id,
       name: c.name,
       date,
-      city: c.city_name ?? "",
+      city: c.city ?? "",
     });
   }
 
