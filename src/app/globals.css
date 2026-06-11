@@ -19,9 +19,28 @@ body {
   font-feature-settings: "cv11", "ss03";
 }
 
-/* Subtle scrollbars for the rankings table on desktop */
-.scrollx::-webkit-scrollbar { height: 8px; }
-.scrollx::-webkit-scrollbar-thumb {
+/* Board: solid backgrounds for the sticky header/column so content
+   scrolling underneath doesn't shine through. */
+.board .corner { background: #15161d; }
+.board .head   { background: #15161d; }
+.board .left   { background: #0e0f15; }
+.board tr:hover .left { background: #15161d; }
+
+.board::-webkit-scrollbar { height: 8px; width: 8px; }
+.board::-webkit-scrollbar-thumb {
   background: rgba(255,255,255,0.12);
   border-radius: 999px;
 }
+
+/* Heat scale: 0–100 mapped to h0…h10 (red → green). */
+.h0  { background: hsla(0,   72%, 45%, .16); }
+.h1  { background: hsla(13,  72%, 45%, .20); }
+.h2  { background: hsla(26,  72%, 45%, .24); }
+.h3  { background: hsla(39,  72%, 45%, .28); }
+.h4  { background: hsla(52,  72%, 45%, .32); }
+.h5  { background: hsla(65,  72%, 45%, .36); }
+.h6  { background: hsla(78,  72%, 45%, .40); }
+.h7  { background: hsla(91,  72%, 45%, .44); }
+.h8  { background: hsla(104, 72%, 45%, .48); }
+.h9  { background: hsla(117, 72%, 45%, .52); }
+.h10 { background: hsla(130, 72%, 45%, .60); font-weight: 600; }

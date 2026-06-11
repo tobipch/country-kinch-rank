@@ -1,82 +1,50 @@
-import Filters from "@/components/Filters";
-import RankingTable from "@/components/RankingTable";
-import {
-  fetchRankings,
-  lastComputedAt,
-  listContinents,
-  type Continent,
-  type RankingRow,
-} from "@/lib/queries";
+import KinchBoard from "@/components/KinchBoard";
+import { fetchBoard, type BoardData } from "@/lib/queries";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+/**
+ * Statically generated and revalidated in the background every 10 minutes.
+ * Requests are served from the CDN cache — no database roundtrip on the
+ * request path. The continent filter is purely client-side.
+ */
+export const revalidate = 600;
 
-type SearchParams = {
-  continent?: string;
-};
-
-interface LoadResult {
-  continents: Continent[];
-  rows: RankingRow[];
-  computedAt: Date | null;
-  error: string | null;
-}
-
-async function loadAll(continentId: string | null): Promise<LoadResult> {
+export default async function HomePage() {
+  let data: BoardData | null = null;
+  let error: string | null = null;
   try {
-    const [continents, rows, computedAt] = await Promise.all([
-      listContinents(),
-      fetchRankings(continentId),
-      lastComputedAt(),
-    ]);
-    return { continents, rows, computedAt, error: null };
+    data = await fetchBoard();
   } catch (e: any) {
     const msg = String(e?.message ?? e);
     console.error("[country-kinch] load failed:", msg);
-    let hint = msg;
-    if (/doesn't exist|Unknown table/i.test(msg)) {
-      hint =
-        "The country_kinch_ranks table does not exist yet. Run the GitHub Actions workflow to populate it.";
+    if (/doesn't exist|Unknown table|Unknown column/i.test(msg)) {
+      error =
+        "The rankings table is missing or outdated. Run the GitHub Actions compute workflow.";
     } else if (/ECONNREFUSED|ETIMEDOUT|ENOTFOUND|Handshake/i.test(msg)) {
-      hint =
-        "Cannot reach the MySQL host. Check that Hostpoint allows external connections and that MYSQL_HOST is correct.";
+      error =
+        "Cannot reach the MySQL host. Check that external connections are allowed and MYSQL_HOST is correct.";
     } else if (/Access denied/i.test(msg)) {
-      hint =
-        "MySQL credentials were rejected. Check MYSQL_USER / MYSQL_PASSWORD on Vercel.";
+      error = "MySQL credentials were rejected. Check MYSQL_USER / MYSQL_PASSWORD.";
+    } else {
+      error = msg;
     }
-    return { continents: [], rows: [], computedAt: null, error: hint };
   }
-}
-
-export default async function HomePage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
-  const continentId = searchParams.continent || null;
-  const { continents, rows, computedAt, error } = await loadAll(continentId);
 
   return (
-    <main className="mx-auto max-w-3xl px-4 pb-24 pt-8 sm:pt-12">
-      <header className="mb-6 sm:mb-8">
-        <div className="flex items-baseline justify-between">
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight">
+    <main className="mx-auto max-w-5xl px-3 pb-16 pt-6 sm:px-6 sm:pt-10">
+      <header className="mb-4 sm:mb-6">
+        <div className="flex items-baseline justify-between gap-2">
+          <h1 className="text-xl sm:text-3xl font-semibold tracking-tight">
             Country Kinch Ranks
           </h1>
-          {computedAt && (
-            <span className="text-xs text-white/40">
-              {computedAt.toLocaleDateString()}
+          {data?.computedAt && (
+            <span className="shrink-0 text-xs text-white/40">
+              {new Date(data.computedAt).toLocaleDateString("en-CH")}
             </span>
           )}
         </div>
-        <p className="mt-1 text-sm text-white/60">
-          {continentId
-            ? "Scores within the selected continent are computed against the continental records."
-            : "Average of national-record Kinch scores across all WCA events. Tap a row to see the per-event breakdown."}
-        </p>
       </header>
 
-      {error ? (
+      {error || !data ? (
         <div className="rounded-2xl border border-amber-400/30 bg-amber-400/5 p-5 text-sm">
           <div className="font-semibold text-amber-300">
             Rankings not available
@@ -84,15 +52,10 @@ export default async function HomePage({
           <p className="mt-1 text-white/70">{error}</p>
         </div>
       ) : (
-        <>
-          <div className="mb-5">
-            <Filters continents={continents} continentId={continentId} />
-          </div>
-          <RankingTable rows={rows} />
-        </>
+        <KinchBoard rows={data.rows} continents={data.continents} />
       )}
 
-      <footer className="mt-8 text-center text-xs text-white/40">
+      <footer className="mt-6 text-center text-xs text-white/40">
         Source: WCA database · Inspired by{" "}
         <a
           href="https://wca.cuber.pro/kinch/countries"

@@ -80,8 +80,10 @@ existing WCA tables are read-only.
 The Hostpoint database must allow external MySQL connections from GitHub's
 runner IP range (or "any IP"). Vercel itself does not run the compute job.
 
-## Filters
+## Architecture / performance
 
-- **Gender**: `all`, `m`, `f` — the denominator (WR) is the best result among
-  the filtered population, so the score still spans 0–100 within each filter.
-- **Continent**: server-side filter on the precomputed table.
+The page is statically generated and revalidated in the background every
+10 minutes (`revalidate = 600`), so requests are served from the CDN cache
+with no database roundtrip. Both score sets (world-record and
+continental-record based) are embedded in the page; the continent filter
+switches between them entirely client-side.
