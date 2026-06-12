@@ -116,10 +116,17 @@ export default function DetailSheet({
   onFocusEvent,
 }: Props) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
+  // Mount-only: focus the close button and lock body scroll. Using empty deps
+  // is critical — onClose is a fresh closure on every parent render, so
+  // depending on it would steal focus back from any input the user is typing
+  // in. The keydown handler reads through a ref to always see the latest
+  // onClose without re-registering.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -129,7 +136,7 @@ export default function DetailSheet({
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [onClose]);
+  }, []);
 
   const contOfMap = useMemo(
     () => new Map(rows.map((r) => [r.id, r.continent])),
