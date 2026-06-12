@@ -304,13 +304,16 @@ function EventRow({
   const [text, setText] = useState(() =>
     value > 0 ? formatResult(value, event.id, kind) : "",
   );
-  // When the edit is cleared externally (reset all / exit), restore the base.
+  const [inputFocused, setInputFocused] = useState(false);
+  // When the edit is cleared externally (reset / reset all / exit), restore
+  // the base value — but never while the user is typing in the field, since
+  // transient states like "17." parse as invalid and must not be clobbered.
   useEffect(() => {
-    if (!edit) {
+    if (!edit && !inputFocused) {
       setText(baseValue > 0 ? formatResult(baseValue, event.id, kind) : "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edit === null]);
+  }, [edit, inputFocused]);
 
   return (
     <div className="rounded-xl">
@@ -407,10 +410,19 @@ function EventRow({
                 type="text"
                 inputMode="decimal"
                 value={text}
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
                 onChange={(e) => {
-                  setText(e.target.value);
-                  const parsed = parseResult(e.target.value, event.id, kind);
-                  if (parsed !== null && parsed !== baseValue) {
+                  const t = e.target.value;
+                  setText(t);
+                  if (t.trim() === "") {
+                    onEdit(event.id, null);
+                    return;
+                  }
+                  const parsed = parseResult(t, event.id, kind);
+                  // Invalid mid-edit states ("17.") keep the last valid edit.
+                  if (parsed === null) return;
+                  if (parsed !== baseValue) {
                     onEdit(event.id, { value: parsed, kind });
                   } else {
                     onEdit(event.id, null);
