@@ -5,21 +5,27 @@ import { KINCH_EVENTS, type KinchEvent } from "@/lib/events";
 import { formatResult, parseResult } from "@/lib/format";
 import type { BoardRow, EventRefs, RefRow } from "@/lib/queries";
 import {
+  effectiveRefValue,
   kinchScore,
-  rankAmong,
   refFor,
-  simulateKinch,
-  type SimState,
+  type Edit,
+  type Edits,
 } from "@/lib/scoring";
+import type { Kind } from "@/lib/kinch";
 
 interface Props {
   country: BoardRow;
   rows: BoardRow[];
   refs: EventRefs;
-  /** "world" or a continent id. Determines which reference scope we use. */
   scope: "world" | string;
   scopeLabel: string;
   focusEventId: string | null;
+  whatIf: boolean;
+  edits: Edits;
+  adjustedKinch: number | null;
+  adjustedRank: number | null;
+  onEdit: (eventId: string, edit: Edit | null) => void;
+  onToggleWhatIf: () => void;
   onClose: () => void;
   onFocusEvent: (id: string | null) => void;
 }
@@ -50,54 +56,47 @@ function Flag({ code, size = 18 }: { code: string | null; size?: number }) {
   );
 }
 
-function gapText(eventId: string, my: number, theirs: number, kind: "s" | "a"): string {
-  if (!my || !theirs || my === theirs) return "0";
-  if (eventId === "333mbf") {
-    // Higher decoded score is better → "theirs" worse than "my" means smaller score.
-    return "";
-  }
+function gapText(
+  eventId: string,
+  my: number,
+  theirs: number,
+  kind: Kind,
+): string {
+  if (!my || !theirs || my === theirs || eventId === "333mbf") return "";
   if (eventId === "333fm") {
-    // Stored as moves (single) or moves*100 (average); compute delta in moves.
-    if (kind === "s") {
-      const d = my - theirs;
-      return d > 0 ? `+${d} moves` : `${d} moves`;
-    }
-    const d = (my - theirs) / 100;
-    return d > 0 ? `+${d.toFixed(2)} moves` : `${d.toFixed(2)} moves`;
+    const d = kind === "s" ? my - theirs : (my - theirs) / 100;
+    const txt = kind === "s" ? `${d}` : d.toFixed(2);
+    return d > 0 ? `+${txt} moves` : `${txt} moves`;
   }
-  // centiseconds → seconds
   const d = (my - theirs) / 100;
   return d > 0 ? `+${d.toFixed(2)}s` : `${d.toFixed(2)}s`;
 }
 
 function pctBehind(value: number, ref: number, eventId: string): string {
-  if (!value || !ref) return "";
-  if (eventId === "333mbf") return "";
+  if (!value || !ref || eventId === "333mbf") return "";
   const pct = ((value - ref) / ref) * 100;
   if (Math.abs(pct) < 0.05) return "0%";
   return pct > 0 ? `+${pct.toFixed(1)}%` : `${pct.toFixed(1)}%`;
 }
 
-function wcaPersonUrl(id: string) {
-  return `https://www.worldcubeassociation.org/persons/${id}`;
-}
-function wcaCompUrl(id: string) {
-  return `https://www.worldcubeassociation.org/competitions/${id}`;
-}
+const wcaPersonUrl = (id: string) =>
+  `https://www.worldcubeassociation.org/persons/${id}`;
+const wcaCompUrl = (id: string) =>
+  `https://www.worldcubeassociation.org/competitions/${id}`;
 
 interface EventLine {
   event: KinchEvent;
-  /** Raw NR value for the active scope/kind. */
+  baseValue: number;
+  baseScore: number;
+  kind: Kind;
   value: number;
-  kind: "s" | "a";
-  score: number;
+  edit: Edit | null;
+  storedRef: RefRow | null;
+  effRefValue: number;
+  refIsWhatIf: boolean;
+  newScore: number;
   holderName: string | null;
   holderId: string | null;
-  ref: RefRow | null;
-  /** Score after the user's edits. */
-  newScore: number;
-  newValue: number;
-  edited: boolean;
 }
 
 export default function DetailSheet({
@@ -107,20 +106,17 @@ export default function DetailSheet({
   scope,
   scopeLabel,
   focusEventId,
+  whatIf,
+  edits,
+  adjustedKinch,
+  adjustedRank,
+  onEdit,
+  onToggleWhatIf,
   onClose,
   onFocusEvent,
 }: Props) {
-  const [edit, setEdit] = useState(false);
-  const [sim, setSim] = useState<SimState>(() => initialSim(country, scope));
   const closeRef = useRef<HTMLButtonElement>(null);
 
-  // Reset simulation when country or scope changes.
-  useEffect(() => {
-    setSim(initialSim(country, scope));
-    setEdit(false);
-  }, [country.id, scope]);
-
-  // Esc closes; lock body scroll while open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -135,44 +131,51 @@ export default function DetailSheet({
     };
   }, [onClose]);
 
+  const contOfMap = useMemo(
+    () => new Map(rows.map((r) => [r.id, r.continent])),
+    [rows],
+  );
+
   const lines = useMemo<EventLine[]>(() => {
     return KINCH_EVENTS.map((event) => {
       const slot = country.e[event.id];
-      const value = scope === "world" ? slot?.vw ?? 0 : slot?.vc ?? 0;
-      const kind = scope === "world" ? slot?.kw ?? "a" : slot?.kc ?? "a";
-      const score = scope === "world" ? slot?.sw ?? 0 : slot?.sc ?? 0;
-      const ref = refFor(refs, event.id, scope, kind);
-      const simSlot = sim[event.id];
-      const newValue = simSlot?.value ?? value;
-      const refVal = ref?.value ?? 0;
-      const newScore = kinchScore(event.id, newValue, refVal);
+      const baseValue = scope === "world" ? slot?.vw ?? 0 : slot?.vc ?? 0;
+      const baseKind: Kind =
+        scope === "world" ? slot?.kw ?? "a" : slot?.kc ?? "a";
+      const baseScore = scope === "world" ? slot?.sw ?? 0 : slot?.sc ?? 0;
+      const edit = edits[country.id]?.[event.id] ?? null;
+      const kind = edit?.kind ?? baseKind;
+      const value = edit?.value ?? baseValue;
+      const storedRef = refFor(refs, event.id, scope, kind);
+      const effRefValue = whatIf
+        ? effectiveRefValue(refs, event.id, kind, scope, edits, (cid) =>
+            contOfMap.get(cid),
+          )
+        : storedRef?.value ?? 0;
+      const newScore = kinchScore(event.id, value, effRefValue);
       return {
         event,
-        value,
+        baseValue,
+        baseScore,
         kind,
-        score,
+        value,
+        edit,
+        storedRef,
+        effRefValue,
+        refIsWhatIf: !!storedRef && effRefValue !== storedRef.value,
+        newScore,
         holderName: slot?.h?.n ?? null,
         holderId: slot?.h?.i ?? null,
-        ref,
-        newScore,
-        newValue,
-        edited: newValue !== value,
       };
     });
-  }, [country, refs, scope, sim]);
+  }, [country, refs, scope, edits, whatIf, contOfMap]);
 
-  const currentKinch = scope === "world" ? country.kw : country.kc;
-  const currentRank = scope === "world" ? country.rw : country.rc;
-  const newKinch = useMemo(
-    () => simulateKinch(refs, sim, scope),
-    [refs, sim, scope],
-  );
-  const newRank = useMemo(
-    () => rankAmong(rows, country.id, newKinch, scope),
-    [rows, country.id, newKinch, scope],
-  );
-
-  const anyEdit = lines.some((l) => l.edited);
+  const baseKinch = scope === "world" ? country.kw : country.kc;
+  const baseRank = scope === "world" ? country.rw : country.rc;
+  const kinch = whatIf && adjustedKinch !== null ? adjustedKinch : baseKinch;
+  const rank = whatIf && adjustedRank !== null ? adjustedRank : baseRank;
+  const kinchChanged = whatIf && Math.abs(kinch - baseKinch) >= 0.005;
+  const rankChanged = whatIf && rank !== baseRank;
 
   return (
     <div
@@ -183,8 +186,7 @@ export default function DetailSheet({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative z-10 w-full max-w-2xl rounded-t-2xl bg-neutral-950 ring-1 ring-white/10 shadow-2xl
-                   sm:rounded-2xl max-h-[92dvh] flex flex-col"
+        className="relative z-10 flex max-h-[92dvh] w-full max-w-2xl flex-col rounded-t-2xl bg-neutral-950 shadow-2xl ring-1 ring-white/10 sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-white/10 px-4 py-3 sm:px-5">
@@ -192,28 +194,28 @@ export default function DetailSheet({
           <div className="min-w-0 flex-1">
             <div className="truncate text-base font-semibold">{country.name}</div>
             <div className="text-xs text-white/50">
-              {scopeLabel} · Rank #{anyEdit ? newRank : currentRank}
-              {anyEdit && newRank !== currentRank && (
+              {scopeLabel} · Rank #{rank}
+              {rankChanged && (
                 <span
                   className={
-                    newRank < currentRank
-                      ? "ml-1 text-emerald-400"
-                      : "ml-1 text-rose-400"
+                    rank < baseRank ? "ml-1 text-emerald-400" : "ml-1 text-rose-400"
                   }
                 >
-                  ({newRank < currentRank ? "↑" : "↓"}
-                  {Math.abs(newRank - currentRank)})
+                  ({rank < baseRank ? "↑" : "↓"}
+                  {Math.abs(rank - baseRank)})
                 </span>
               )}
             </div>
           </div>
           <div className="text-right">
-            <div className="text-2xl font-semibold tabular-nums">
-              {(anyEdit ? newKinch : currentKinch).toFixed(2)}
+            <div
+              className={`text-2xl font-semibold tabular-nums ${kinchChanged ? "text-amber-300" : ""}`}
+            >
+              {kinch.toFixed(2)}
             </div>
-            {anyEdit && (
-              <div className="text-xs text-white/40 tabular-nums">
-                was {currentKinch.toFixed(2)}
+            {kinchChanged && (
+              <div className="text-xs tabular-nums text-white/40">
+                was {baseKinch.toFixed(2)}
               </div>
             )}
           </div>
@@ -239,18 +241,15 @@ export default function DetailSheet({
             Tap an event for record details
           </div>
           <button
-            onClick={() => {
-              if (edit) setSim(initialSim(country, scope));
-              setEdit(!edit);
-            }}
+            onClick={onToggleWhatIf}
             className={[
               "rounded-full px-3 py-1 text-xs font-medium ring-1 transition",
-              edit
+              whatIf
                 ? "bg-amber-300 text-neutral-900 ring-amber-300"
                 : "bg-white/5 text-white/80 ring-white/15 hover:bg-white/10",
             ].join(" ")}
           >
-            {edit ? "Exit what-if" : "What if?"}
+            {whatIf ? "Exit what-if" : "What if?"}
           </button>
         </div>
 
@@ -259,21 +258,12 @@ export default function DetailSheet({
             <EventRow
               key={l.event.id}
               line={l}
-              edit={edit}
+              whatIf={whatIf}
               focused={focusEventId === l.event.id}
-              onFocus={() => onFocusEvent(focusEventId === l.event.id ? null : l.event.id)}
-              onChange={(value) => {
-                setSim((prev) => ({
-                  ...prev,
-                  [l.event.id]: { value, kind: l.kind },
-                }));
-              }}
-              onReset={() => {
-                setSim((prev) => ({
-                  ...prev,
-                  [l.event.id]: { value: l.value, kind: l.kind },
-                }));
-              }}
+              onFocus={() =>
+                onFocusEvent(focusEventId === l.event.id ? null : l.event.id)
+              }
+              onEdit={onEdit}
               scopeLabel={scopeLabel}
             />
           ))}
@@ -283,39 +273,37 @@ export default function DetailSheet({
   );
 }
 
-function initialSim(country: BoardRow, scope: "world" | string): SimState {
-  const s: SimState = {};
-  for (const e of KINCH_EVENTS) {
-    const slot = country.e[e.id];
-    if (!slot) continue;
-    s[e.id] =
-      scope === "world"
-        ? { value: slot.vw, kind: slot.kw }
-        : { value: slot.vc, kind: slot.kc };
-  }
-  return s;
-}
-
 function EventRow({
   line,
-  edit,
+  whatIf,
   focused,
   onFocus,
-  onChange,
-  onReset,
+  onEdit,
   scopeLabel,
 }: {
   line: EventLine;
-  edit: boolean;
+  whatIf: boolean;
   focused: boolean;
   onFocus: () => void;
-  onChange: (value: number) => void;
-  onReset: () => void;
+  onEdit: (eventId: string, edit: Edit | null) => void;
   scopeLabel: string;
 }) {
-  const { event, value, kind, score, ref, newScore, newValue, edited } = line;
+  const { event, baseValue, baseScore, kind, value, edit, storedRef } = line;
   const hasResult = value > 0;
-  const heat = scoreHeat(edited ? newScore : score);
+  const edited = edit !== null;
+  const displayScore = whatIf ? line.newScore : baseScore;
+  const heat = scoreHeat(displayScore);
+
+  const [text, setText] = useState(() =>
+    value > 0 ? formatResult(value, event.id, kind) : "",
+  );
+  // When the edit is cleared externally (reset all / exit), restore the base.
+  useEffect(() => {
+    if (!edit) {
+      setText(baseValue > 0 ? formatResult(baseValue, event.id, kind) : "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [edit === null]);
 
   return (
     <div className="rounded-xl">
@@ -324,13 +312,22 @@ function EventRow({
         className="grid w-full grid-cols-[1fr_auto_auto] items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-white/5"
       >
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{event.longName}</div>
+          <div className="truncate text-sm font-medium">
+            {event.longName}
+            {edited && (
+              <span className="ml-1.5 rounded bg-amber-300/15 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                edited
+              </span>
+            )}
+          </div>
           <div className="truncate text-xs text-white/45">
             {hasResult ? (
               <>
-                NR {formatResult(value, event.id, kind)}
+                NR {formatResult(edited ? baseValue : value, event.id, kind)}
+                {edited &&
+                  ` → ${formatResult(value, event.id, kind)}`}
                 {event.type === "best" && (kind === "s" ? " · single" : " · avg")}
-                {line.holderName ? ` · ${line.holderName}` : ""}
+                {line.holderName && !edited ? ` · ${line.holderName}` : ""}
               </>
             ) : (
               "No NR yet"
@@ -338,18 +335,26 @@ function EventRow({
           </div>
         </div>
         <div className="text-right text-xs text-white/50 tabular-nums">
-          {ref ? formatResult(ref.value, event.id, kind) : "—"}
+          {line.effRefValue > 0
+            ? formatResult(line.effRefValue, event.id, kind)
+            : "—"}
           <div className="text-[10px] uppercase tracking-wide">
-            {scopeLabel === "World" ? "WR" : "CR"}
+            {line.refIsWhatIf ? (
+              <span className="text-amber-300">what-if ref</span>
+            ) : scopeLabel === "World" ? (
+              "WR"
+            ) : (
+              "CR"
+            )}
           </div>
         </div>
         <span
           className={`min-w-[3.25rem] rounded-md px-2 py-0.5 text-right text-sm font-semibold tabular-nums ${heat}`}
         >
-          {fmtScore(edited ? newScore : score)}
-          {edited && (
-            <div className="text-[10px] font-normal text-white/60 tabular-nums">
-              was {fmtScore(score)}
+          {fmtScore(displayScore)}
+          {whatIf && Math.abs(displayScore - baseScore) >= 0.05 && (
+            <div className="text-[10px] font-normal tabular-nums text-white/60">
+              was {fmtScore(baseScore)}
             </div>
           )}
         </span>
@@ -359,45 +364,50 @@ function EventRow({
         <div className="mx-2 mb-3 mt-1 rounded-xl bg-white/[0.04] p-3 ring-1 ring-white/10">
           {hasResult && line.holderName && (
             <DetailLine
-              label={`${scopeLabel === "World" ? "Country" : "Country"} NR`}
-              valueLabel={formatResult(value, event.id, kind)}
+              label="Country NR"
+              valueLabel={formatResult(baseValue, event.id, kind)}
               personName={line.holderName}
               personId={line.holderId}
-              comp={null}
-              ref={null}
-              eventId={event.id}
-              kind={kind}
-              myValue={value}
             />
           )}
-          {ref && (
+          {storedRef && (
             <DetailLine
               label={scopeLabel === "World" ? "World Record" : `${scopeLabel} Record`}
-              valueLabel={formatResult(ref.value, event.id, kind)}
-              personName={ref.personName}
-              personId={ref.personId}
-              comp={ref}
-              ref={null}
-              eventId={event.id}
-              kind={kind}
-              myValue={hasResult ? value : 0}
-              myCountry={hasResult}
+              valueLabel={formatResult(storedRef.value, event.id, kind)}
+              personName={storedRef.personName}
+              personId={storedRef.personId}
+              compId={storedRef.compId}
+              compName={storedRef.compName}
+              compDate={storedRef.compDate}
+              compCity={storedRef.compCity}
+              note={
+                hasResult
+                  ? [
+                      gapText(event.id, baseValue, storedRef.value, kind),
+                      pctBehind(baseValue, storedRef.value, event.id),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : ""
+              }
             />
           )}
 
-          {edit && event.id !== "333mbf" && (
+          {whatIf && event.id !== "333mbf" && (
             <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-3">
               <label className="text-xs text-white/60">What-if NR:</label>
               <input
                 type="text"
                 inputMode="decimal"
-                defaultValue={
-                  newValue > 0 ? formatResult(newValue, event.id, kind) : ""
-                }
+                value={text}
                 onChange={(e) => {
+                  setText(e.target.value);
                   const parsed = parseResult(e.target.value, event.id, kind);
-                  if (parsed !== null) onChange(parsed);
-                  else if (e.target.value.trim() === "") onChange(0);
+                  if (parsed !== null && parsed !== baseValue) {
+                    onEdit(event.id, { value: parsed, kind });
+                  } else {
+                    onEdit(event.id, null);
+                  }
                 }}
                 placeholder={
                   event.id === "333fm" && kind === "s"
@@ -406,11 +416,11 @@ function EventRow({
                       ? "25.33"
                       : "10.42 or 1:02.53"
                 }
-                className="w-32 rounded-md bg-black/40 px-2 py-1 text-sm ring-1 ring-white/15 focus:outline-none focus:ring-white/40"
+                className="w-32 rounded-md bg-black/40 px-2 py-1 text-sm ring-1 ring-white/15 focus:outline-none focus:ring-amber-300/60"
               />
               {edited && (
                 <button
-                  onClick={onReset}
+                  onClick={() => onEdit(event.id, null)}
                   className="text-xs text-white/50 hover:text-white"
                 >
                   reset
@@ -421,15 +431,15 @@ function EventRow({
                   <>
                     <span
                       className={
-                        newScore > score
+                        line.newScore > baseScore
                           ? "text-emerald-400"
-                          : newScore < score
+                          : line.newScore < baseScore
                             ? "text-rose-400"
                             : "text-white/40"
                       }
                     >
-                      {newScore > score ? "+" : ""}
-                      {(newScore - score).toFixed(2)}
+                      {line.newScore > baseScore ? "+" : ""}
+                      {(line.newScore - baseScore).toFixed(2)}
                     </span>{" "}
                     pts
                   </>
@@ -448,35 +458,27 @@ function DetailLine({
   valueLabel,
   personName,
   personId,
-  comp,
-  eventId,
-  kind,
-  myValue,
-  myCountry,
+  compId,
+  compName,
+  compDate,
+  compCity,
+  note,
 }: {
   label: string;
   valueLabel: string;
   personName: string;
   personId: string | null;
-  comp: RefRow | null;
-  ref: null;
-  eventId: string;
-  kind: "s" | "a";
-  myValue: number;
-  myCountry?: boolean;
+  compId?: string | null;
+  compName?: string | null;
+  compDate?: string | null;
+  compCity?: string | null;
+  note?: string;
 }) {
-  const gap = comp && myValue > 0 ? gapText(eventId, myValue, comp.value, kind) : "";
-  const pct = comp && myValue > 0 ? pctBehind(myValue, comp.value, eventId) : "";
   return (
     <div className="border-t border-white/5 py-2 first:border-t-0 first:pt-0">
       <div className="flex items-baseline gap-2">
         <div className="text-xs uppercase tracking-wide text-white/40">{label}</div>
-        {comp && myCountry && (gap || pct) && (
-          <div className="text-xs text-white/40">
-            you {gap}
-            {pct && ` (${pct})`}
-          </div>
-        )}
+        {note && <div className="text-xs text-white/40">you {note}</div>}
       </div>
       <div className="mt-0.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
         <span className="font-mono text-base font-semibold tabular-nums">
@@ -494,22 +496,18 @@ function DetailLine({
         ) : (
           <span className="text-white/85">{personName}</span>
         )}
-        {comp?.compId && (
+        {compId && (
           <a
-            href={wcaCompUrl(comp.compId)}
+            href={wcaCompUrl(compId)}
             target="_blank"
             rel="noreferrer"
             className="text-xs text-white/55 underline-offset-2 hover:underline"
           >
-            {comp.compName ?? comp.compId}
+            {compName ?? compId}
           </a>
         )}
-        {comp?.compDate && (
-          <span className="text-xs text-white/45">{comp.compDate}</span>
-        )}
-        {comp?.compCity && (
-          <span className="text-xs text-white/45">· {comp.compCity}</span>
-        )}
+        {compDate && <span className="text-xs text-white/45">{compDate}</span>}
+        {compCity && <span className="text-xs text-white/45">· {compCity}</span>}
       </div>
     </div>
   );
@@ -517,12 +515,11 @@ function DetailLine({
 
 function scoreHeat(s: number): string {
   if (s <= 0) return "text-white/30";
-  const h = Math.min(10, Math.floor(s / 10));
-  return `h${h}`;
+  return `h${Math.min(10, Math.floor(s / 10))}`;
 }
 
 function fmtScore(s: number): string {
   if (s <= 0) return "—";
   if (s >= 99.95) return "100";
-  return s < 10 ? s.toFixed(1) : s.toFixed(1);
+  return s.toFixed(1);
 }

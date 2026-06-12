@@ -4,6 +4,8 @@
 
 :root {
   color-scheme: dark;
+  --panel: #0e0f15;
+  --panel2: #15161d;
 }
 
 html, body {
@@ -17,18 +19,53 @@ body {
     #0b0c10;
   color: #e6e7eb;
   -webkit-font-smoothing: antialiased;
+  transition: background 0.3s ease;
 }
 
-/* Board sticky surfaces */
+/* ===== What-if mode: page-wide tint + glowing border frame ===== */
+body.whatif {
+  --panel: #161108;
+  --panel2: #1e160a;
+  background:
+    radial-gradient(1200px 600px at 0% -10%, rgba(251,191,36,0.10), transparent 60%),
+    radial-gradient(1200px 600px at 100% 110%, rgba(245,158,11,0.08), transparent 60%),
+    #100d06;
+}
+
+body.whatif::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 90;
+  border: 3px solid rgba(251, 191, 36, 0.55);
+  box-shadow:
+    inset 0 0 30px rgba(251, 191, 36, 0.12),
+    inset 0 0 4px rgba(251, 191, 36, 0.35);
+  animation: whatif-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes whatif-pulse {
+  0%, 100% { border-color: rgba(251, 191, 36, 0.55); }
+  50%      { border-color: rgba(251, 191, 36, 0.25); }
+}
+
+/* ===== Board sticky surfaces (follow the what-if tint via variables) ===== */
 .board .corner,
 .board .corner2,
-.board .head    { background: #15161d; }
+.board .head    { background: var(--panel2); }
 .board .rank,
-.board .left    { background: #0e0f15; }
+.board .left    { background: var(--panel); }
 .board tr:hover .rank,
-.board tr:hover .left { background: #15161d; }
+.board tr:hover .left { background: var(--panel2); }
 .board .cell    { font-weight: 500; }
 .board th { border-bottom: 1px solid rgba(255,255,255,0.08); }
+.board td { line-height: 1.25; }
+
+.board .cell.edited {
+  box-shadow: inset 0 0 0 1.5px rgba(251, 191, 36, 0.85);
+  border-radius: 4px;
+}
 
 .board::-webkit-scrollbar { height: 8px; width: 8px; }
 .board::-webkit-scrollbar-thumb {
@@ -36,7 +73,7 @@ body {
   border-radius: 999px;
 }
 
-/* Heat scale: 0–100 mapped to h0…h10 (red → green). */
+/* ===== Heat scale: 0–100 mapped to h0…h10 (red → green) ===== */
 .h0  { background: hsla(0,   72%, 45%, .16); }
 .h1  { background: hsla(13,  72%, 45%, .20); }
 .h2  { background: hsla(26,  72%, 45%, .24); }
@@ -48,6 +85,3 @@ body {
 .h8  { background: hsla(104, 72%, 45%, .48); }
 .h9  { background: hsla(117, 72%, 45%, .52); }
 .h10 { background: hsla(130, 72%, 45%, .60); font-weight: 600; }
-
-/* Tap targets stay 32px-ish on mobile but visually tight */
-.board td { line-height: 1.25; }
