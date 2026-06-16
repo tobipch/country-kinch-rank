@@ -6,7 +6,7 @@ import { getPool } from "../src/lib/db";
  * A successful compute leaves yesterday's data in place on failure (we only
  * recreate when init-db detects a mismatch, not on every run).
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const CREATE_RANKS = `
 CREATE TABLE country_kinch_ranks (

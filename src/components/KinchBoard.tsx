@@ -295,7 +295,10 @@ export default function KinchBoard({ rows, continents, refs }: Props) {
                       : continent
                         ? slot?.sc ?? 0
                         : slot?.sw ?? 0;
-                    const isEdited = !!edits[r.id]?.[e.id];
+                    const eEdit = edits[r.id]?.[e.id];
+                    const isEdited =
+                      !!eEdit &&
+                      (eEdit.single !== undefined || eEdit.average !== undefined);
                     return (
                       <td
                         key={e.id}

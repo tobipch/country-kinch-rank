@@ -39,12 +39,21 @@ export interface EventData {
   average: EventSide | null;
 }
 
-export interface EventScore {
+/** Score for one specific kind (single or average) of one country/event. */
+export interface KindScore {
   score: number;
   value: number;
-  kind: Kind;
-  /** NR holder + comp (set after enrichWithCompetitions). */
   holder: BestResult | null;
+}
+
+/**
+ * Both kinds tracked separately. For "average" events only `a` is populated;
+ * for "single"/"multibld" only `s`; for "best" events (3BLD, FM) both can
+ * be populated and the Kinch score uses the better of the two.
+ */
+export interface EventScores {
+  s: KindScore | null;
+  a: KindScore | null;
 }
 
 export interface CountryKinch {
@@ -54,7 +63,7 @@ export interface CountryKinch {
   kinchCont: number;
   rankWorld: number;
   rankCont: number;
-  events: Record<string, { world: EventScore; cont: EventScore }>;
+  events: Record<string, { world: EventScores; cont: EventScores }>;
 }
 
 export interface KinchComputation {
@@ -71,6 +80,53 @@ export function kinchScore(eventId: string, value: number, ref: number): number 
     return r > 0 ? (s / r) * 100 : 0;
   }
   return (ref / value) * 100;
+}
+
+export function eventNeedsSingle(e: KinchEvent): boolean {
+  return e.type !== "average";
+}
+export function eventNeedsAverage(e: KinchEvent): boolean {
+  return e.type === "average" || e.type === "best";
+}
+
+/** Best of single / average for one view, respecting the event's rules. */
+export function bestKindScore(
+  es: EventScores,
+  e: KinchEvent,
+): { kind: Kind; score: number; value: number; holder: BestResult | null } {
+  if (e.type === "average") {
+    return {
+      kind: "a",
+      score: es.a?.score ?? 0,
+      value: es.a?.value ?? 0,
+      holder: es.a?.holder ?? null,
+    };
+  }
+  if (e.type === "single" || e.type === "multibld") {
+    return {
+      kind: "s",
+      score: es.s?.score ?? 0,
+      value: es.s?.value ?? 0,
+      holder: es.s?.holder ?? null,
+    };
+  }
+  // "best": pick the side with the higher score.
+  const sS = es.s?.score ?? 0;
+  const aS = es.a?.score ?? 0;
+  if (sS >= aS) {
+    return {
+      kind: "s",
+      score: sS,
+      value: es.s?.value ?? 0,
+      holder: es.s?.holder ?? null,
+    };
+  }
+  return {
+    kind: "a",
+    score: aS,
+    value: es.a?.value ?? 0,
+    holder: es.a?.holder ?? null,
+  };
 }
 
 interface PersonInfo {
@@ -139,30 +195,6 @@ async function loadSide(
   return { table, worldRef, contRef, countryBest };
 }
 
-function defaultKind(event: KinchEvent): Kind {
-  return event.type === "average" ? "a" : "s";
-}
-
-function pick(
-  ed: EventData,
-  sBest: BestResult | undefined,
-  aBest: BestResult | undefined,
-  sRef: number,
-  aRef: number,
-): EventScore {
-  const s = sBest ? kinchScore(ed.event.id, sBest.value, sRef) : 0;
-  const a = aBest ? kinchScore(ed.event.id, aBest.value, aRef) : 0;
-  if (ed.event.type === "average") {
-    return { score: a, value: aBest?.value ?? 0, kind: "a", holder: aBest ?? null };
-  }
-  if (ed.event.type === "best") {
-    return s >= a
-      ? { score: s, value: sBest?.value ?? 0, kind: "s", holder: sBest ?? null }
-      : { score: a, value: aBest?.value ?? 0, kind: "a", holder: aBest ?? null };
-  }
-  return { score: s, value: sBest?.value ?? 0, kind: "s", holder: sBest ?? null };
-}
-
 function assignRanks(
   list: CountryKinch[],
   key: (c: CountryKinch) => number,
@@ -192,16 +224,6 @@ async function tableColumns(table: string): Promise<Set<string>> {
   return new Set(rows.map((r) => r.col.toLowerCase()));
 }
 
-/**
- * Enrich BestResult.comp by looking up the earliest competition where the
- * holder achieved that exact result. Only the NR/CR/WR holders we actually
- * care about are queried, so this stays fast even on the full WCA dump.
- *
- * Importers model the competitions table differently (WCA dump uses
- * year/month/day, API-style imports use start_date), so the available
- * columns are introspected first. If essentials are missing, enrichment is
- * skipped and the compute still succeeds — comp info is a nice-to-have.
- */
 async function enrichWithCompetitions(events: EventData[]): Promise<void> {
   const compCols = await tableColumns("competitions");
   const resultCols = await tableColumns("results");
@@ -249,8 +271,6 @@ async function enrichWithCompetitions(events: EventData[]): Promise<void> {
     });
   }
 
-  // For each event, gather the holder set we need to enrich, then issue one
-  // results query and look up each holder's earliest matching competition.
   await Promise.all(
     events.map(async (ed) => {
       const enrichSide = async (side: EventSide | null, kind: Kind) => {
@@ -317,8 +337,8 @@ export async function computeAll(): Promise<KinchComputation> {
 
   const events: EventData[] = await Promise.all(
     KINCH_EVENTS.map(async (event) => {
-      const needSingle = event.type !== "average";
-      const needAverage = event.type === "average" || event.type === "best";
+      const needSingle = eventNeedsSingle(event);
+      const needAverage = eventNeedsAverage(event);
       const [single, average] = await Promise.all([
         needSingle
           ? loadSide("ranks_single", event.id, persons, continentByCountry)
@@ -363,21 +383,45 @@ export async function computeAll(): Promise<KinchComputation> {
       if (!c) continue;
       const sBest = ed.single?.countryBest.get(cid);
       const aBest = ed.average?.countryBest.get(cid);
-      const world = pick(
-        ed,
-        sBest,
-        aBest,
-        ed.single?.worldRef?.value ?? 0,
-        ed.average?.worldRef?.value ?? 0,
-      );
-      const cont = pick(
-        ed,
-        sBest,
-        aBest,
-        ed.single?.contRef.get(c.continentId)?.value ?? 0,
-        ed.average?.contRef.get(c.continentId)?.value ?? 0,
-      );
-      c.events[ed.event.id] = { world, cont };
+      const sWorldRef = ed.single?.worldRef?.value ?? 0;
+      const aWorldRef = ed.average?.worldRef?.value ?? 0;
+      const sContRef = ed.single?.contRef.get(c.continentId)?.value ?? 0;
+      const aContRef = ed.average?.contRef.get(c.continentId)?.value ?? 0;
+
+      c.events[ed.event.id] = {
+        world: {
+          s: sBest
+            ? {
+                score: kinchScore(ed.event.id, sBest.value, sWorldRef),
+                value: sBest.value,
+                holder: sBest,
+              }
+            : null,
+          a: aBest
+            ? {
+                score: kinchScore(ed.event.id, aBest.value, aWorldRef),
+                value: aBest.value,
+                holder: aBest,
+              }
+            : null,
+        },
+        cont: {
+          s: sBest
+            ? {
+                score: kinchScore(ed.event.id, sBest.value, sContRef),
+                value: sBest.value,
+                holder: sBest,
+              }
+            : null,
+          a: aBest
+            ? {
+                score: kinchScore(ed.event.id, aBest.value, aContRef),
+                value: aBest.value,
+                holder: aBest,
+              }
+            : null,
+        },
+      };
     }
   }
 
@@ -388,14 +432,11 @@ export async function computeAll(): Promise<KinchComputation> {
     for (const e of KINCH_EVENTS) {
       let slot = c.events[e.id];
       if (!slot) {
-        slot = {
-          world: { score: 0, value: 0, kind: defaultKind(e), holder: null },
-          cont: { score: 0, value: 0, kind: defaultKind(e), holder: null },
-        };
+        slot = { world: { s: null, a: null }, cont: { s: null, a: null } };
         c.events[e.id] = slot;
       }
-      sumW += slot.world.score;
-      sumC += slot.cont.score;
+      sumW += bestKindScore(slot.world, e).score;
+      sumC += bestKindScore(slot.cont, e).score;
     }
     c.kinchWorld = sumW / n;
     c.kinchCont = sumC / n;

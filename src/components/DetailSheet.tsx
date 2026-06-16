@@ -3,9 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { KINCH_EVENTS, type KinchEvent } from "@/lib/events";
 import { formatResult, parseResult } from "@/lib/format";
-import type { BoardRow, EventRefs, RefRow } from "@/lib/queries";
+import type { BoardRow, EventRefs, HolderInfo, RefRow } from "@/lib/queries";
 import {
   effectiveRefValue,
+  eventHasBothKinds,
+  eventNeedsAverage,
+  eventNeedsSingle,
   kinchScore,
   refFor,
   type Edit,
@@ -56,12 +59,7 @@ function Flag({ code, size = 18 }: { code: string | null; size?: number }) {
   );
 }
 
-function gapText(
-  eventId: string,
-  my: number,
-  theirs: number,
-  kind: Kind,
-): string {
+function gapText(eventId: string, my: number, theirs: number, kind: Kind): string {
   if (!my || !theirs || my === theirs || eventId === "333mbf") return "";
   if (eventId === "333fm") {
     const d = kind === "s" ? my - theirs : (my - theirs) / 100;
@@ -84,19 +82,28 @@ const wcaPersonUrl = (id: string) =>
 const wcaCompUrl = (id: string) =>
   `https://www.worldcubeassociation.org/competitions/${id}`;
 
-interface EventLine {
-  event: KinchEvent;
-  baseValue: number;
-  baseScore: number;
+interface KindRow {
   kind: Kind;
-  value: number;
-  edit: Edit | null;
+  baseValue: number;
+  effValue: number;
+  edited: boolean;
+  edit: number | undefined;
+  baseScore: number;
+  newScore: number;
   storedRef: RefRow | null;
   effRefValue: number;
   refIsWhatIf: boolean;
-  newScore: number;
-  holderName: string | null;
-  holderId: string | null;
+  holder: HolderInfo | null;
+}
+
+interface EventLine {
+  event: KinchEvent;
+  baseDisplayScore: number;
+  newDisplayScore: number;
+  baseDisplayKind: Kind;
+  newDisplayKind: Kind;
+  edited: boolean;
+  kinds: KindRow[];
 }
 
 export default function DetailSheet({
@@ -119,11 +126,9 @@ export default function DetailSheet({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // Mount-only: focus the close button and lock body scroll. Using empty deps
-  // is critical — onClose is a fresh closure on every parent render, so
-  // depending on it would steal focus back from any input the user is typing
-  // in. The keydown handler reads through a ref to always see the latest
-  // onClose without re-registering.
+  // Mount-only: focus close button & lock body scroll. onClose is a fresh
+  // closure on every parent render, so depending on it would steal focus
+  // back from the input on every keystroke.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
@@ -146,33 +151,70 @@ export default function DetailSheet({
   const lines = useMemo<EventLine[]>(() => {
     return KINCH_EVENTS.map((event) => {
       const slot = country.e[event.id];
-      const baseValue = scope === "world" ? slot?.vw ?? 0 : slot?.vc ?? 0;
-      const baseKind: Kind =
-        scope === "world" ? slot?.kw ?? "a" : slot?.kc ?? "a";
-      const baseScore = scope === "world" ? slot?.sw ?? 0 : slot?.sc ?? 0;
-      const edit = edits[country.id]?.[event.id] ?? null;
-      const kind = edit?.kind ?? baseKind;
-      const value = edit?.value ?? baseValue;
-      const storedRef = refFor(refs, event.id, scope, kind);
-      const effRefValue = whatIf
-        ? effectiveRefValue(refs, event.id, kind, scope, edits, (cid) =>
-            contOfMap.get(cid),
-          )
-        : storedRef?.value ?? 0;
-      const newScore = kinchScore(event.id, value, effRefValue);
+      const edit = edits[country.id]?.[event.id];
+
+      const buildKindRow = (kind: Kind): KindRow | null => {
+        if (kind === "s" && !eventNeedsSingle(event)) return null;
+        if (kind === "a" && !eventNeedsAverage(event)) return null;
+        const baseValue = kind === "s" ? slot?.vs ?? 0 : slot?.va ?? 0;
+        const editVal = kind === "s" ? edit?.single : edit?.average;
+        const effValue = editVal ?? baseValue;
+        const storedRef = refFor(refs, event.id, scope, kind);
+        const effRefValue = whatIf
+          ? effectiveRefValue(refs, event.id, kind, scope, edits, (cid) =>
+              contOfMap.get(cid),
+            )
+          : storedRef?.value ?? 0;
+        return {
+          kind,
+          baseValue,
+          effValue,
+          edited: editVal !== undefined,
+          edit: editVal,
+          baseScore: kinchScore(event.id, baseValue, storedRef?.value ?? 0),
+          newScore: kinchScore(event.id, effValue, effRefValue),
+          storedRef,
+          effRefValue,
+          refIsWhatIf: !!storedRef && effRefValue !== storedRef.value,
+          holder: kind === "s" ? slot?.hs ?? null : slot?.ha ?? null,
+        };
+      };
+
+      const sRow = buildKindRow("s");
+      const aRow = buildKindRow("a");
+      const kinds: KindRow[] = [];
+      if (sRow) kinds.push(sRow);
+      if (aRow) kinds.push(aRow);
+
+      // "best" event picks the higher of single/average scores per view.
+      const baseDisplayScore = scope === "world" ? slot?.sw ?? 0 : slot?.sc ?? 0;
+      const baseDisplayKind: Kind =
+        (scope === "world" ? slot?.kw : slot?.kc) ?? "a";
+
+      let newDisplayScore = 0;
+      let newDisplayKind: Kind = baseDisplayKind;
+      if (event.type === "average") {
+        newDisplayScore = aRow?.newScore ?? 0;
+        newDisplayKind = "a";
+      } else if (event.type === "single" || event.type === "multibld") {
+        newDisplayScore = sRow?.newScore ?? 0;
+        newDisplayKind = "s";
+      } else {
+        const s = sRow?.newScore ?? 0;
+        const a = aRow?.newScore ?? 0;
+        newDisplayScore = Math.max(s, a);
+        newDisplayKind = s >= a ? "s" : "a";
+      }
+
+      const edited = kinds.some((k) => k.edited);
       return {
         event,
-        baseValue,
-        baseScore,
-        kind,
-        value,
-        edit,
-        storedRef,
-        effRefValue,
-        refIsWhatIf: !!storedRef && effRefValue !== storedRef.value,
-        newScore,
-        holderName: slot?.h?.n ?? null,
-        holderId: slot?.h?.i ?? null,
+        baseDisplayScore,
+        newDisplayScore,
+        baseDisplayKind,
+        newDisplayKind,
+        edited,
+        kinds,
       };
     });
   }, [country, refs, scope, edits, whatIf, contOfMap]);
@@ -271,6 +313,7 @@ export default function DetailSheet({
                 onFocusEvent(focusEventId === l.event.id ? null : l.event.id)
               }
               onEdit={onEdit}
+              currentEdit={edits[country.id]?.[l.event.id]}
               scopeLabel={scopeLabel}
             />
           ))}
@@ -286,6 +329,7 @@ function EventRow({
   focused,
   onFocus,
   onEdit,
+  currentEdit,
   scopeLabel,
 }: {
   line: EventLine;
@@ -293,27 +337,27 @@ function EventRow({
   focused: boolean;
   onFocus: () => void;
   onEdit: (eventId: string, edit: Edit | null) => void;
+  currentEdit: Edit | undefined;
   scopeLabel: string;
 }) {
-  const { event, baseValue, baseScore, kind, value, edit, storedRef } = line;
-  const hasResult = value > 0;
-  const edited = edit !== null;
-  const displayScore = whatIf ? line.newScore : baseScore;
+  const { event, kinds, baseDisplayScore, newDisplayScore, baseDisplayKind, newDisplayKind, edited } =
+    line;
+  const displayScore = whatIf ? newDisplayScore : baseDisplayScore;
+  const displayKind = whatIf ? newDisplayKind : baseDisplayKind;
   const heat = scoreHeat(displayScore);
+  const both = eventHasBothKinds(event);
 
-  const [text, setText] = useState(() =>
-    value > 0 ? formatResult(value, event.id, kind) : "",
-  );
-  const [inputFocused, setInputFocused] = useState(false);
-  // When the edit is cleared externally (reset / reset all / exit), restore
-  // the base value — but never while the user is typing in the field, since
-  // transient states like "17." parse as invalid and must not be clobbered.
-  useEffect(() => {
-    if (!edit && !inputFocused) {
-      setText(baseValue > 0 ? formatResult(baseValue, event.id, kind) : "");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edit, inputFocused]);
+  const baseDisplayKindRow = kinds.find((k) => k.kind === baseDisplayKind);
+  const baseDisplayValue = baseDisplayKindRow?.baseValue ?? 0;
+  const newDisplayKindRow = kinds.find((k) => k.kind === newDisplayKind);
+  const newDisplayValue = newDisplayKindRow?.effValue ?? 0;
+  const subtitle = baseDisplayValue > 0
+    ? `NR ${formatResult(baseDisplayValue, event.id, baseDisplayKind)}` +
+      (edited && newDisplayValue !== baseDisplayValue
+        ? ` → ${formatResult(newDisplayValue, event.id, newDisplayKind)}`
+        : "") +
+      (both ? ` · ${baseDisplayKind === "s" ? "single" : "avg"}` : "")
+    : "No NR yet";
 
   return (
     <div className="rounded-xl">
@@ -330,144 +374,241 @@ function EventRow({
               </span>
             )}
           </div>
-          <div className="truncate text-xs text-white/45">
-            {hasResult ? (
-              <>
-                NR {formatResult(edited ? baseValue : value, event.id, kind)}
-                {edited &&
-                  ` → ${formatResult(value, event.id, kind)}`}
-                {event.type === "best" && (kind === "s" ? " · single" : " · avg")}
-                {line.holderName && !edited ? ` · ${line.holderName}` : ""}
-              </>
-            ) : (
-              "No NR yet"
-            )}
-          </div>
-        </div>
-        <div className="text-right text-xs text-white/50 tabular-nums">
-          {line.effRefValue > 0
-            ? formatResult(line.effRefValue, event.id, kind)
-            : "—"}
-          <div className="text-[10px] uppercase tracking-wide">
-            {line.refIsWhatIf ? (
-              <span className="text-amber-300">what-if ref</span>
-            ) : scopeLabel === "World" ? (
-              "WR"
-            ) : (
-              "CR"
-            )}
-          </div>
+          <div className="truncate text-xs text-white/45">{subtitle}</div>
         </div>
         <span
           className={`min-w-[3.25rem] rounded-md px-2 py-0.5 text-right text-sm font-semibold tabular-nums ${heat}`}
         >
           {fmtScore(displayScore)}
-          {whatIf && Math.abs(displayScore - baseScore) >= 0.05 && (
+          {whatIf && Math.abs(displayScore - baseDisplayScore) >= 0.05 && (
             <div className="text-[10px] font-normal tabular-nums text-white/60">
-              was {fmtScore(baseScore)}
+              was {fmtScore(baseDisplayScore)}
             </div>
           )}
+        </span>
+        <span className="text-white/40" aria-hidden>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            className={`transition-transform ${focused ? "rotate-180" : ""}`}
+          >
+            <path
+              d="M6 9l6 6 6-6"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </span>
       </button>
 
       {focused && (
         <div className="mx-2 mb-3 mt-1 rounded-xl bg-white/[0.04] p-3 ring-1 ring-white/10">
-          {hasResult && line.holderName && (
-            <DetailLine
-              label="Country NR"
-              valueLabel={formatResult(baseValue, event.id, kind)}
-              personName={line.holderName}
-              personId={line.holderId}
+          {kinds.map((kr) => (
+            <KindSection
+              key={kr.kind}
+              eventId={event.id}
+              kr={kr}
+              showKindLabel={both}
+              scopeLabel={scopeLabel}
             />
-          )}
-          {storedRef && (
-            <DetailLine
-              label={scopeLabel === "World" ? "World Record" : `${scopeLabel} Record`}
-              valueLabel={formatResult(storedRef.value, event.id, kind)}
-              personName={storedRef.personName}
-              personId={storedRef.personId}
-              compId={storedRef.compId}
-              compName={storedRef.compName}
-              compDate={storedRef.compDate}
-              compCity={storedRef.compCity}
-              note={
-                hasResult
-                  ? [
-                      gapText(event.id, baseValue, storedRef.value, kind),
-                      pctBehind(baseValue, storedRef.value, event.id),
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")
-                  : ""
-              }
-            />
-          )}
+          ))}
 
           {whatIf && event.id !== "333mbf" && (
-            <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-3">
-              <label className="text-xs text-white/60">What-if NR:</label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={text}
-                onFocus={() => setInputFocused(true)}
-                onBlur={() => setInputFocused(false)}
-                onChange={(e) => {
-                  const t = e.target.value;
-                  setText(t);
-                  if (t.trim() === "") {
-                    onEdit(event.id, null);
-                    return;
-                  }
-                  const parsed = parseResult(t, event.id, kind);
-                  // Invalid mid-edit states ("17.") keep the last valid edit.
-                  if (parsed === null) return;
-                  if (parsed !== baseValue) {
-                    onEdit(event.id, { value: parsed, kind });
-                  } else {
-                    onEdit(event.id, null);
-                  }
-                }}
-                placeholder={
-                  event.id === "333fm" && kind === "s"
-                    ? "moves"
-                    : event.id === "333fm"
-                      ? "25.33"
-                      : "10.42 or 1:02.53"
-                }
-                className="w-32 rounded-md bg-black/40 px-2 py-1 text-sm ring-1 ring-white/15 focus:outline-none focus:ring-amber-300/60"
-              />
-              {edited && (
-                <button
-                  onClick={() => onEdit(event.id, null)}
-                  className="text-xs text-white/50 hover:text-white"
-                >
-                  reset
-                </button>
-              )}
-              <span className="ml-auto text-xs tabular-nums">
-                {edited && (
-                  <>
-                    <span
-                      className={
-                        line.newScore > baseScore
-                          ? "text-emerald-400"
-                          : line.newScore < baseScore
-                            ? "text-rose-400"
-                            : "text-white/40"
-                      }
-                    >
-                      {line.newScore > baseScore ? "+" : ""}
-                      {(line.newScore - baseScore).toFixed(2)}
-                    </span>{" "}
-                    pts
-                  </>
-                )}
-              </span>
+            <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
+              {kinds.map((kr) => (
+                <EditField
+                  key={kr.kind}
+                  eventId={event.id}
+                  kr={kr}
+                  showKindLabel={both}
+                  edit={currentEdit ?? {}}
+                  onChange={(updater) => {
+                    const next: Edit = { ...(currentEdit ?? {}) };
+                    updater(next);
+                    if (next.single === undefined && next.average === undefined) {
+                      onEdit(event.id, null);
+                    } else {
+                      onEdit(event.id, next);
+                    }
+                  }}
+                />
+              ))}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function KindSection({
+  eventId,
+  kr,
+  showKindLabel,
+  scopeLabel,
+}: {
+  eventId: string;
+  kr: KindRow;
+  showKindLabel: boolean;
+  scopeLabel: string;
+}) {
+  const kindLabel = kr.kind === "s" ? "Single" : "Average";
+  return (
+    <div className="border-t border-white/5 pb-1 pt-2 first:border-t-0 first:pt-0">
+      {showKindLabel && (
+        <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-white/55">
+          {kindLabel}
+        </div>
+      )}
+      {kr.baseValue > 0 && kr.holder && (
+        <DetailLine
+          label="Country NR"
+          valueLabel={formatResult(kr.baseValue, eventId, kr.kind)}
+          personName={kr.holder.n}
+          personId={kr.holder.i}
+          compId={kr.holder.c}
+          compName={kr.holder.cn}
+          compDate={kr.holder.d}
+          compCity={kr.holder.ct}
+        />
+      )}
+      {kr.storedRef && (
+        <DetailLine
+          label={scopeLabel === "World" ? "World Record" : `${scopeLabel} Record`}
+          valueLabel={formatResult(kr.storedRef.value, eventId, kr.kind)}
+          personName={kr.storedRef.personName}
+          personId={kr.storedRef.personId}
+          compId={kr.storedRef.compId}
+          compName={kr.storedRef.compName}
+          compDate={kr.storedRef.compDate}
+          compCity={kr.storedRef.compCity}
+          note={
+            kr.baseValue > 0
+              ? [
+                  gapText(eventId, kr.baseValue, kr.storedRef.value, kr.kind),
+                  pctBehind(kr.baseValue, kr.storedRef.value, eventId),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : ""
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function EditField({
+  eventId,
+  kr,
+  showKindLabel,
+  edit,
+  onChange,
+}: {
+  eventId: string;
+  kr: KindRow;
+  showKindLabel: boolean;
+  edit: Edit;
+  onChange: (mut: (next: Edit) => void) => void;
+}) {
+  const init =
+    kr.effValue > 0 ? formatResult(kr.effValue, eventId, kr.kind) : "";
+  const [text, setText] = useState(init);
+  const [inputFocused, setInputFocused] = useState(false);
+  const editVal = kr.kind === "s" ? edit.single : edit.average;
+  // Restore the field to the base value when an edit is cleared externally,
+  // but not while the user is typing (so "17." doesn't snap back).
+  useEffect(() => {
+    if (editVal === undefined && !inputFocused) {
+      setText(
+        kr.baseValue > 0 ? formatResult(kr.baseValue, eventId, kr.kind) : "",
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editVal, inputFocused]);
+
+  return (
+    <div className="flex items-center gap-2">
+      {showKindLabel && (
+        <span className="w-14 text-[10px] font-semibold uppercase tracking-wider text-white/55">
+          {kr.kind === "s" ? "Single" : "Average"}
+        </span>
+      )}
+      <input
+        type="text"
+        inputMode="decimal"
+        value={text}
+        onFocus={() => setInputFocused(true)}
+        onBlur={() => setInputFocused(false)}
+        onChange={(e) => {
+          const t = e.target.value;
+          setText(t);
+          if (t.trim() === "") {
+            onChange((n) => {
+              if (kr.kind === "s") delete n.single;
+              else delete n.average;
+            });
+            return;
+          }
+          const parsed = parseResult(t, eventId, kr.kind);
+          if (parsed === null) return;
+          if (parsed !== kr.baseValue) {
+            onChange((n) => {
+              if (kr.kind === "s") n.single = parsed;
+              else n.average = parsed;
+            });
+          } else {
+            onChange((n) => {
+              if (kr.kind === "s") delete n.single;
+              else delete n.average;
+            });
+          }
+        }}
+        placeholder={
+          eventId === "333fm" && kr.kind === "s"
+            ? "moves"
+            : eventId === "333fm"
+              ? "25.33"
+              : "10.42 or 1:02.53"
+        }
+        className="w-32 rounded-md bg-black/40 px-2 py-1 text-sm ring-1 ring-white/15 focus:outline-none focus:ring-amber-300/60"
+      />
+      {kr.edited && (
+        <button
+          onClick={() => {
+            onChange((n) => {
+              if (kr.kind === "s") delete n.single;
+              else delete n.average;
+            });
+          }}
+          className="text-xs text-white/50 hover:text-white"
+        >
+          reset
+        </button>
+      )}
+      <span className="ml-auto text-xs tabular-nums">
+        {kr.edited && (
+          <>
+            <span
+              className={
+                kr.newScore > kr.baseScore
+                  ? "text-emerald-400"
+                  : kr.newScore < kr.baseScore
+                    ? "text-rose-400"
+                    : "text-white/40"
+              }
+            >
+              {kr.newScore > kr.baseScore ? "+" : ""}
+              {(kr.newScore - kr.baseScore).toFixed(2)}
+            </span>{" "}
+            pts
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -494,10 +635,12 @@ function DetailLine({
   note?: string;
 }) {
   return (
-    <div className="border-t border-white/5 py-2 first:border-t-0 first:pt-0">
+    <div className="border-t border-white/5 py-1.5 first:border-t-0 first:pt-0">
       <div className="flex items-baseline gap-2">
-        <div className="text-xs uppercase tracking-wide text-white/40">{label}</div>
-        {note && <div className="text-xs text-white/40">you {note}</div>}
+        <div className="text-[10px] uppercase tracking-wide text-white/40">
+          {label}
+        </div>
+        {note && <div className="text-[10px] text-white/40">you {note}</div>}
       </div>
       <div className="mt-0.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-sm">
         <span className="font-mono text-base font-semibold tabular-nums">

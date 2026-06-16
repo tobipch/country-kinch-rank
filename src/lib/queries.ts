@@ -7,29 +7,31 @@ import {
 } from "./wca-meta";
 import type { Kind } from "./kinch";
 
-/**
- * Compact data shipped with the static page. Each country carries its rank,
- * Kinch scores for both views, and for each event: score (world + cont),
- * raw value, chosen kind, plus the NR holder + competition details so the
- * detail sheet can render without any extra request.
- */
+export interface HolderInfo {
+  i: string;
+  n: string;
+  c: string | null;
+  cn: string | null;
+  d: string | null;
+  ct: string | null;
+}
 
+/**
+ * One country's data for one event. Both single (`vs`/`hs`) and average
+ * (`va`/`ha`) sides are stored so the what-if editor can show / edit each
+ * independently for "best of single or average" events (3BLD, FM).
+ * `sw/sc` are the precomputed display scores (max of the two for best
+ * events), `kw/kc` indicate which kind those scores came from.
+ */
 export interface EventSlot {
+  vs: number;
+  va: number;
+  hs: HolderInfo | null;
+  ha: HolderInfo | null;
   sw: number;
-  vw: number;
-  kw: Kind;
   sc: number;
-  vc: number;
+  kw: Kind;
   kc: Kind;
-  /** NR holder + competition info. */
-  h: {
-    i: string;
-    n: string;
-    c: string | null;
-    cn: string | null;
-    d: string | null;
-    ct: string | null;
-  } | null;
 }
 
 export interface BoardRow {
@@ -41,7 +43,6 @@ export interface BoardRow {
   rw: number;
   kc: number;
   rc: number;
-  /** Per-event slots, indexed by event id. */
   e: Record<string, EventSlot>;
 }
 
@@ -59,7 +60,6 @@ export interface RefRow {
   compCity: string | null;
 }
 
-/** Per-event refs: kind → { 'world' or continentId → RefRow }. */
 export type EventRefs = Record<string, Record<Kind, Record<string, RefRow>>>;
 
 export interface ContinentInfo {
@@ -98,13 +98,14 @@ export async function fetchBoard(): Promise<BoardData> {
     for (const ev of KINCH_EVENTS) {
       const d = data[ev.id] ?? {};
       e[ev.id] = {
+        vs: Number(d.vs ?? 0),
+        va: Number(d.va ?? 0),
+        hs: d.hs ?? null,
+        ha: d.ha ?? null,
         sw: Number(d.sw ?? 0),
-        vw: Number(d.vw ?? 0),
-        kw: (d.kw ?? "a") as Kind,
         sc: Number(d.sc ?? 0),
-        vc: Number(d.vc ?? 0),
+        kw: (d.kw ?? "a") as Kind,
         kc: (d.kc ?? "a") as Kind,
-        h: d.h ?? null,
       };
     }
     return {

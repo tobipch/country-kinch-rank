@@ -1,6 +1,11 @@
 import "dotenv/config";
 import { getPool } from "../src/lib/db";
-import { computeAll, type BestResult, type EventData } from "../src/lib/kinch";
+import {
+  computeAll,
+  type BestResult,
+  type CountryKinch,
+  bestKindScore,
+} from "../src/lib/kinch";
 import { KINCH_EVENTS } from "../src/lib/events";
 
 function refRow(
@@ -24,6 +29,38 @@ function refRow(
   ];
 }
 
+function compactHolder(h: BestResult | null) {
+  if (!h) return null;
+  return {
+    i: h.personId,
+    n: h.personName,
+    c: h.comp?.id ?? null,
+    cn: h.comp?.name ?? null,
+    d: h.comp?.date ?? null,
+    ct: h.comp?.city ?? null,
+  };
+}
+
+function buildEventData(c: CountryKinch): Record<string, any> {
+  const data: Record<string, any> = {};
+  for (const e of KINCH_EVENTS) {
+    const slot = c.events[e.id] ?? { world: { s: null, a: null }, cont: { s: null, a: null } };
+    const w = bestKindScore(slot.world, e);
+    const k = bestKindScore(slot.cont, e);
+    data[e.id] = {
+      vs: slot.world.s?.value ?? 0,
+      va: slot.world.a?.value ?? 0,
+      hs: compactHolder(slot.world.s?.holder ?? null),
+      ha: compactHolder(slot.world.a?.holder ?? null),
+      sw: Number(w.score.toFixed(2)),
+      kw: w.kind,
+      sc: Number(k.score.toFixed(2)),
+      kc: k.kind,
+    };
+  }
+  return data;
+}
+
 async function main() {
   const pool = getPool();
 
@@ -35,7 +72,6 @@ async function main() {
   try {
     await conn.beginTransaction();
 
-    // refs (WR + per-continent CR for every event, both kinds where applicable)
     await conn.query("DELETE FROM country_kinch_refs");
     const refRows: any[][] = [];
     for (const ed of events) {
@@ -63,47 +99,21 @@ async function main() {
       );
     }
 
-    // ranks (one row per country)
     await conn.query("DELETE FROM country_kinch_ranks");
     const now = new Date();
     const batchSize = 100;
     for (let i = 0; i < countries.length; i += batchSize) {
       const batch = countries.slice(i, i + batchSize);
-      const values = batch.map((c) => {
-        const eventData: Record<string, any> = {};
-        for (const e of KINCH_EVENTS) {
-          const slot = c.events[e.id];
-          const wh = slot.world.holder;
-          eventData[e.id] = {
-            sw: Number(slot.world.score.toFixed(2)),
-            vw: slot.world.value,
-            kw: slot.world.kind,
-            sc: Number(slot.cont.score.toFixed(2)),
-            vc: slot.cont.value,
-            kc: slot.cont.kind,
-            h: wh
-              ? {
-                  i: wh.personId,
-                  n: wh.personName,
-                  c: wh.comp?.id ?? null,
-                  cn: wh.comp?.name ?? null,
-                  d: wh.comp?.date ?? null,
-                  ct: wh.comp?.city ?? null,
-                }
-              : null,
-          };
-        }
-        return [
-          c.countryId,
-          c.continentId,
-          Number(c.kinchWorld.toFixed(4)),
-          Number(c.kinchCont.toFixed(4)),
-          JSON.stringify(eventData),
-          c.rankWorld,
-          c.rankCont,
-          now,
-        ];
-      });
+      const values = batch.map((c) => [
+        c.countryId,
+        c.continentId,
+        Number(c.kinchWorld.toFixed(4)),
+        Number(c.kinchCont.toFixed(4)),
+        JSON.stringify(buildEventData(c)),
+        c.rankWorld,
+        c.rankCont,
+        now,
+      ]);
       const placeholders = values.map(() => "(?,?,?,?,?,?,?,?)").join(",");
       await conn.query(
         `INSERT INTO country_kinch_ranks

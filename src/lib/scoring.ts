@@ -1,14 +1,15 @@
 import { multiBldKinchScore } from "./multibld";
-import { KINCH_EVENTS } from "./events";
+import { KINCH_EVENTS, type KinchEvent } from "./events";
 import type { Kind } from "./kinch";
 import type { BoardRow, EventRefs, RefRow } from "./queries";
 
 /**
  * Client-side what-if engine. Edits live in a single global structure
- * (country → event → edited value); the whole board is recomputed from raw
- * values + references, so an edit that beats a WR/CR becomes the new
- * reference and every other country's score reacts to it — exactly like a
- * real record would.
+ * (country → event → {single?, average?}). Both single and average values
+ * for an event can be edited independently for "best" events. The whole
+ * board is recomputed from raw values + references on each edit, so an
+ * edit that beats a WR/CR becomes the new reference and every other
+ * country's score reacts to it.
  */
 
 export function kinchScore(eventId: string, value: number, ref: number): number {
@@ -21,17 +22,38 @@ export function kinchScore(eventId: string, value: number, ref: number): number 
   return (ref / value) * 100;
 }
 
-export interface Edit {
-  value: number;
-  kind: Kind;
+export function eventNeedsSingle(e: KinchEvent): boolean {
+  return e.type !== "average";
+}
+export function eventNeedsAverage(e: KinchEvent): boolean {
+  return e.type === "average" || e.type === "best";
+}
+/** True if the event supports both kinds (3BLD, FM). */
+export function eventHasBothKinds(e: KinchEvent): boolean {
+  return e.type === "best";
 }
 
-/** countryId → eventId → edit */
+/**
+ * Per-event edit. `single` and `average` are tracked independently:
+ *   - undefined → not edited, fall back to the stored NR for that kind
+ *   - 0         → user cleared this kind (treat as "no result")
+ *   - >0        → user-entered hypothetical NR
+ */
+export interface Edit {
+  single?: number;
+  average?: number;
+}
+
 export type Edits = Record<string, Record<string, Edit>>;
 
 export function countEdits(edits: Edits): number {
   let n = 0;
-  for (const ev of Object.values(edits)) n += Object.keys(ev).length;
+  for (const ev of Object.values(edits)) {
+    for (const e of Object.values(ev)) {
+      if (e.single !== undefined) n++;
+      if (e.average !== undefined) n++;
+    }
+  }
   return n;
 }
 
@@ -44,11 +66,6 @@ export function refFor(
   return refs[eventId]?.[kind]?.[scope] ?? null;
 }
 
-/**
- * Reference value for an event/kind/scope after considering edits: if any
- * edited NR in scope beats the stored record, it becomes the reference.
- * (All WCA encodings are lower-is-better, including Multi-BLD.)
- */
 export function effectiveRefValue(
   refs: EventRefs,
   eventId: string,
@@ -60,9 +77,11 @@ export function effectiveRefValue(
   let ref = refs[eventId]?.[kind]?.[scope]?.value ?? 0;
   for (const [cid, ev] of Object.entries(edits)) {
     const e = ev[eventId];
-    if (!e || e.kind !== kind || e.value <= 0) continue;
+    if (!e) continue;
+    const v = kind === "s" ? e.single : e.average;
+    if (v === undefined || v <= 0) continue;
     if (scope !== "world" && continentOf(cid) !== scope) continue;
-    if (ref === 0 || e.value < ref) ref = e.value;
+    if (ref === 0 || v < ref) ref = v;
   }
   return ref;
 }
@@ -70,14 +89,16 @@ export function effectiveRefValue(
 export interface AdjustedCountry {
   kinch: number;
   rank: number;
+  /** Max score for the event (best of single/avg for "best" events). */
   scores: Record<string, number>;
+  /** Per-event per-kind score after edits. */
+  kindScores: Record<string, { s: number; a: number }>;
+  /** Per-event per-kind effective value after edits. */
+  values: Record<string, { s: number; a: number }>;
+  /** Per-event chosen kind for the displayed score. */
+  chosenKind: Record<string, Kind>;
 }
 
-/**
- * Recompute the entire visible board under the current edits.
- * Returns one entry per country in scope, with competition-style ranking
- * (ties share a rank).
- */
 export function adjustBoard(
   rows: BoardRow[],
   refs: EventRefs,
@@ -105,18 +126,54 @@ export function adjustBoard(
   for (const r of inScope) {
     let sum = 0;
     const scores: Record<string, number> = {};
+    const kindScores: Record<string, { s: number; a: number }> = {};
+    const values: Record<string, { s: number; a: number }> = {};
+    const chosenKind: Record<string, Kind> = {};
     for (const e of KINCH_EVENTS) {
       const slot = r.e[e.id];
       const edit = edits[r.id]?.[e.id];
-      const kind: Kind =
-        edit?.kind ?? (scope === "world" ? slot?.kw : slot?.kc) ?? "a";
-      const value =
-        edit?.value ?? (scope === "world" ? slot?.vw : slot?.vc) ?? 0;
-      const s = kinchScore(e.id, value, getRef(e.id, kind));
-      scores[e.id] = s;
-      sum += s;
+      const vs = edit?.single ?? slot?.vs ?? 0;
+      const va = edit?.average ?? slot?.va ?? 0;
+      const sScore =
+        eventNeedsSingle(e) && vs > 0
+          ? kinchScore(e.id, vs, getRef(e.id, "s"))
+          : 0;
+      const aScore =
+        eventNeedsAverage(e) && va > 0
+          ? kinchScore(e.id, va, getRef(e.id, "a"))
+          : 0;
+      let best = 0;
+      let kind: Kind = "a";
+      if (e.type === "average") {
+        best = aScore;
+        kind = "a";
+      } else if (e.type === "single" || e.type === "multibld") {
+        best = sScore;
+        kind = "s";
+      } else {
+        // "best"
+        if (sScore >= aScore) {
+          best = sScore;
+          kind = "s";
+        } else {
+          best = aScore;
+          kind = "a";
+        }
+      }
+      scores[e.id] = best;
+      kindScores[e.id] = { s: sScore, a: aScore };
+      values[e.id] = { s: vs, a: va };
+      chosenKind[e.id] = kind;
+      sum += best;
     }
-    result.set(r.id, { kinch: sum / KINCH_EVENTS.length, rank: 0, scores });
+    result.set(r.id, {
+      kinch: sum / KINCH_EVENTS.length,
+      rank: 0,
+      scores,
+      kindScores,
+      values,
+      chosenKind,
+    });
   }
 
   const sorted = Array.from(result.entries()).sort(
