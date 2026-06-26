@@ -36,9 +36,28 @@ export default async function HomePage() {
           <h1 className="text-lg sm:text-2xl font-semibold tracking-tight">
             Country Kinch Ranks
           </h1>
-          {data?.computedAt && (
-            <span className="shrink-0 text-[11px] text-white/40">
-              {new Date(data.computedAt).toLocaleDateString("en-CH")}
+          {(data?.wcaExportAt || data?.computedAt) && (
+            <span
+              className="shrink-0 text-right text-[11px] leading-tight text-white/40"
+              title={
+                data.wcaExportAt
+                  ? `WCA export · ${new Date(data.wcaExportAt).toISOString()}`
+                  : undefined
+              }
+            >
+              {data.wcaExportAt ? (
+                <>
+                  <span className="block text-white/30">WCA export</span>
+                  <span className="block tabular-nums">
+                    {new Date(data.wcaExportAt).toLocaleString("en-CH", {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </span>
+                </>
+              ) : (
+                new Date(data.computedAt!).toLocaleDateString("en-CH")
+              )}
             </span>
           )}
         </div>

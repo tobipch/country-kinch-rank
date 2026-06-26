@@ -72,10 +72,11 @@ export interface BoardData {
   continents: ContinentInfo[];
   refs: EventRefs;
   computedAt: string | null;
+  wcaExportAt: string | null;
 }
 
 export async function fetchBoard(): Promise<BoardData> {
-  const [rankRows, refRows] = await Promise.all([
+  const [rankRows, refRows, wcaExportAt] = await Promise.all([
     query<any>(
       `SELECT country_id, continent_id, kinch_score_world, kinch_score_cont,
               rank_world, rank_continent, event_data, computed_at
@@ -87,6 +88,7 @@ export async function fetchBoard(): Promise<BoardData> {
               person_name, comp_id, comp_name, comp_date, comp_city
        FROM country_kinch_refs`,
     ),
+    fetchWcaExportAt(),
   ]);
 
   const rows: BoardRow[] = rankRows.map((r) => {
@@ -151,5 +153,81 @@ export async function fetchBoard(): Promise<BoardData> {
     ? new Date(rankRows[0].computed_at).toISOString()
     : null;
 
-  return { rows, continents, refs, computedAt };
+  return { rows, continents, refs, computedAt, wcaExportAt };
+}
+
+/**
+ * Best-effort lookup of the WCA dump date the local DB was last imported
+ * from. The `import_metadata` table is owned by the other app and we don't
+ * know its exact shape, so we introspect: prefer a directly-named date
+ * column on a single-row table (export_date / wca_export_date / …), then
+ * fall back to a key/value shape (k = 'export_date', v = ISO string).
+ * Returns null if nothing usable is found — the UI then hides the row.
+ */
+async function fetchWcaExportAt(): Promise<string | null> {
+  try {
+    const cols = await query<{ col: string; type: string }>(
+      `SELECT COLUMN_NAME AS col, DATA_TYPE AS type
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = 'import_metadata'`,
+    );
+    if (cols.length === 0) return null;
+    const colSet = new Map(cols.map((c) => [c.col.toLowerCase(), c]));
+
+    const directCandidates = [
+      "export_date",
+      "wca_export_date",
+      "exported_at",
+      "dump_date",
+      "wca_dump_date",
+      "imported_at",
+      "import_date",
+      "updated_at",
+    ];
+    for (const name of directCandidates) {
+      const col = colSet.get(name);
+      if (!col) continue;
+      const rows = await query<{ t: any }>(
+        `SELECT MAX(\`${col.col}\`) AS t FROM import_metadata`,
+      );
+      const v = rows[0]?.t;
+      if (v) return new Date(v).toISOString();
+    }
+
+    const anyDate = cols.find((c) =>
+      ["date", "datetime", "timestamp"].includes(c.type.toLowerCase()),
+    );
+    if (anyDate) {
+      const rows = await query<{ t: any }>(
+        `SELECT MAX(\`${anyDate.col}\`) AS t FROM import_metadata`,
+      );
+      const v = rows[0]?.t;
+      if (v) return new Date(v).toISOString();
+    }
+
+    // Key/value shape (k, v columns).
+    const hasK =
+      colSet.has("k") || colSet.has("key") || colSet.has("name");
+    const hasV =
+      colSet.has("v") || colSet.has("value") || colSet.has("val");
+    if (hasK && hasV) {
+      const kCol = colSet.has("k") ? "k" : colSet.has("key") ? "key" : "name";
+      const vCol = colSet.has("v") ? "v" : colSet.has("value") ? "value" : "val";
+      const rows = await query<{ v: string }>(
+        `SELECT \`${vCol}\` AS v FROM import_metadata
+         WHERE \`${kCol}\` IN ('export_date','wca_export_date','exported_at','dump_date')
+         ORDER BY \`${kCol}\` LIMIT 1`,
+      );
+      const v = rows[0]?.v;
+      if (v) {
+        const d = new Date(v);
+        if (!isNaN(d.getTime())) return d.toISOString();
+      }
+    }
+
+    return null;
+  } catch (e) {
+    console.warn("[country-kinch] wca export lookup failed:", e);
+    return null;
+  }
 }
