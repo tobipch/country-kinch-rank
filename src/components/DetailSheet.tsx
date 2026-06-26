@@ -34,23 +34,22 @@ interface Props {
 }
 
 function Flag({ code, size = 18 }: { code: string | null; size?: number }) {
+  const w = Math.round(size * 1.33);
   if (!code) {
     return (
       <span
         aria-hidden
         className="inline-block shrink-0 rounded-[2px] bg-white/10"
-        style={{ width: size * 1.33, height: size }}
+        style={{ width: w, height: size }}
       />
     );
   }
   const cc = code.toLowerCase();
-  const w = Math.round(size * 1.33);
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={`https://flagcdn.com/w${w * 2}/${cc}.png`}
-      width={w}
-      height={size}
+      src={`https://flagcdn.com/w40/${cc}.png`}
+      srcSet={`https://flagcdn.com/w80/${cc}.png 2x`}
       alt=""
       loading="lazy"
       className="shrink-0 rounded-[2px] object-cover ring-1 ring-black/40"
