@@ -2,8 +2,8 @@ name: Compute Country Kinch Ranks
 
 on:
   schedule:
-    # Daily at 03:17 UTC. Offset from the hour to avoid GitHub's busy minute.
-    - cron: "17 3 * * *"
+    # Daily at 09:17 UTC. Offset from the hour to avoid GitHub's busy minute.
+    - cron: "17 9 * * *"
   workflow_dispatch: {}
 
 concurrency:
